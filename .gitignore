@@ -1,0 +1,86 @@
+# ==========================
+# 1. PYTHON & BACKEND
+# ==========================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env/
+
+# Distribution / Packaging
+dist/
+build/
+*.egg-info/
+
+# Unit Test / Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Logs
+*.log
+*.log.*
+
+# ==========================
+# 2. FRONTEND (React/Node)
+# ==========================
+# Dependencies
+node_modules/
+.npm/
+
+# Production Build
+/dist
+/build
+
+# Next.js / Nuxt.js (if applicable in future)
+.next/
+.nuxt/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================
+# 3. ENVIRONMENT & SECRETS (CRITICAL)
+# ==========================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+
+config.py
+
+# ==========================
+# 4. DATABASE & REDIS
+# ==========================
+# Redis local dump
+dump.rdb
+
+# SQLite (if used)
+*.sqlite3
+*.db
+
+# Local SQL dumps
+*.sql
+
+# ==========================
+# 5. IDE & EDITOR SETTINGS
+# ==========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==========================
+# 6. OPERATING SYSTEM FILES
+# ==========================
+.DS_Store
+Thumbs.db
