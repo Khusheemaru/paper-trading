@@ -56,8 +56,6 @@ yarn-error.log*
 *.key
 
 
-config.py
-
 # ==========================
 # 4. DATABASE & REDIS
 # ==========================
