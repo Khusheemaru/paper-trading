@@ -1,0 +1,175 @@
+# Implementation Plan: HedgeBot India Paper-Trading Platform
+
+## 1. Project Overview
+
+**Objective**: To build a robust, local-first paper-trading platform that simulates the Indian Stock Market (NSE) environment. The platform allows users to practice trading strategies with virtual funds using real-time or simulated market data without financial risk.
+
+**Target Users**:
+-   Beginner traders learning market mechanics.
+-   Algorithm developers testing strategies (`algo_trading` context).
+-   Developers learning Fintech architecture.
+
+**Core Value Proposition**:
+-   **Risk-Free Environment**: Experience real market volatility without losing money.
+-   **Real-Time Simulation**: WebSocket-based ticks provide a realistic day-trading experience.
+-   **transparent Architecture**: Simple, modular design allowing users to understand the flow of data from exchange to execution.
+
+**High-Level System Description**:
+HedgeBot India is a microservices-lite application. It uses a **FastAPI** backend for business logic, **Redis** for high-frequency market data distribution, **PostgreSQL** for persistent storage, and a **React (Vite)** frontend for the trading dashboard.
+
+---
+
+## 2. Feature Scope
+
+### Core Features (MVP)
+-   **User Authentication**: JWT-based simulated login/register (currently bypassed in dev).
+-   **Virtual Wallet**: Each user starts with ₹10,00,000 (10 Lakhs).
+-   **Market Data**: Real-time ticker for NIFTY 50 via WebSocket.
+-   **Order Entry**:
+    -   **Market Orders**: Immediate execution at current price.
+    -   **Limit Orders**: Execute only when price hits target.
+-   **Portfolio Tracking**: Real-time view of Holdings, Cash, and Invested Capital.
+-   **P&L Calculation**:
+    -   **Realized**: Recorded when a position is closed.
+    -   **Unrealized**: Floating P&L based on current market price.
+-   **Order History**: Audit trail of all submitted, executed, and cancelled orders.
+
+### Advanced Features (Future Scope)
+-   **Stop-Loss / Take-Profit**: Automated risk management orders.
+-   **Strategy Backtesting**: Run historical simulations against stored tick data.
+-   **Performance Dashboard**: Win/Loss ratio, Sharpe ratio, Max Drawdown.
+-   **Multi-Asset Support**: Expand beyond NIFTY to individual stocks.
+
+---
+
+## 3. System Architecture
+
+### Frontend Architecture
+-   **Framework**: React 19 + Vite + TypeScript.
+-   **State Management**: React Hooks + Context API (simple state).
+-   **Real-time Communication**: [WebSocket](file:///e:/market-project/frontend/src/App.tsx#63-97) (native or `react-use-websocket`) for market ticks.
+-   **Charting**: `lightweight-charts` (Canvas-based) for high-performance rendering.
+
+### Backend Architecture
+-   **Framework**: FastAPI (Python) - Async, high-performance.
+-   **API Structure**: REST for Order/Portfolio management; WebSocket for Market Data.
+-   **Microservices vs Monolith**: **Modular Monolith**.
+    -   *Reasoning*: The current scale is small. A single [server.py](file:///e:/market-project/server.py) handling API requests is efficient. The "data fetcher" runs as a separate process ([stream_india.py](file:///e:/market-project/stream_india.py)) but shares the codebase.
+
+### Data Flow
+1.  **Ingestion**: [stream_india.py](file:///e:/market-project/stream_india.py) fetches data -> Pushes to **Redis** (Pub/Sub & Cache).
+2.  **Distribution**: [server.py](file:///e:/market-project/server.py) subscribes to Redis -> Broadcasts to Frontend via WebSocket.
+3.  **Execution**: Frontend sends Order -> [server.py](file:///e:/market-project/server.py) writes to **PostgreSQL**.
+
+### Scalability Considerations
+-   **Redis**: Decouples the slow database from high-frequency ticks.
+-   **AsyncIO**: Python's `asyncio` handles thousands of concurrent WebSocket connections.
+-   **Database Pool**: `psycopg2.pool` prevents connection exhaustion.
+
+---
+
+## 4. Database Schema Design (PostgreSQL)
+
+### Users
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| [id](file:///e:/market-project/database.py#85-98) | BIGSERIAL (PK) | Unique User ID |
+| [email](file:///e:/market-project/database.py#71-84) | VARCHAR | User login |
+| `password_hash` | VARCHAR | Security |
+
+### Portfolios
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `user_id` | BIGINT (FK) | Owner |
+| `symbol` | VARCHAR | Market (e.g., 'NIFTY') |
+| `cash_available` | DECIMAL | Buying power |
+| `total_capital` | DECIMAL | Net worth tracking |
+
+### Orders
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `order_type` | VARCHAR | 'buy' / 'sell' |
+| `price` | DECIMAL | Limit price (NULL for Market) |
+| [status](file:///e:/market-project/database.py#355-373) | VARCHAR | 'pending', 'executed', 'cancelled' |
+
+### Trades
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `entry_price` | DECIMAL | Execution price |
+| `pnl` | DECIMAL | Realized Profit/Loss |
+| `exit_time` | TIMESTAMP | When trade closed |
+
+### Market Data (Time-Series)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `time` | TIMESTAMP | Tick timestamp |
+| `price` | DECIMAL | Last Traded Price |
+| `volume` | BIGINT | Trade volume |
+
+---
+
+## 5. Development Phases & Milestones
+
+### Phase 1: Core Backend (Completed)
+-   [x] Set up FastAPI and Redis connection.
+-   [x] Implement Data Streamer ([stream_india.py](file:///e:/market-project/stream_india.py)).
+-   [x] Design Database Schema ([schema.sql](file:///e:/market-project/db/schema.sql)).
+
+### Phase 2: Feature Gap Fill (Current Focus)
+-   **Timeline**: 1 Week
+-   [ ] **Authentication**: Implement JWT endpoints (`/login`, `/register`) in [server.py](file:///e:/market-project/server.py).
+-   [ ] **Matching Engine**: Create specific logic to process [pending](file:///e:/market-project/database.py#321-337) orders. Currently, orders just sit in the DB.
+-   [ ] **API Sync**: Update [server.py](file:///e:/market-project/server.py) to match the endpoints expected by [test_all.ps1](file:///e:/market-project/test_all.ps1).
+
+### Phase 3: Frontend Refinement
+-   **Timeline**: 1 Week
+-   [ ] Build "Place Order" Form (UI).
+-   [ ] Display "Positions" and "Order History" tables.
+-   [ ] Connect UI buttons to Backend API.
+
+### Phase 4: Testing & QA
+-   **Timeline**: 3 Days
+-   [ ] Fix [test_all.ps1](file:///e:/market-project/test_all.ps1) to pass against the actual server.
+-   [ ] Add Unit Tests for the Order Matching logic.
+
+### Phase 5: Deployment
+-   **Timeline**: 2 Days
+-   [ ] Dockerize the application (`docker-compose up`).
+
+---
+
+## 6. Risk Assessment
+
+| Risk Zone | Risk | Mitigation Strategy |
+| :--- | :--- | :--- |
+| **Market Data** | Data stream disconnects or lags. | Auto-reconnect logic in [stream_india.py](file:///e:/market-project/stream_india.py). Fallback to Mock data if API fails. |
+| **Concurrency** | Double spending of wallet funds. | Database Transactions (`conn.commit()`) + Row-level locking on Portfolio updates. |
+| **Performance** | WebSocket lag with many users. | Redis Pub/Sub is efficient. If load increases, separate WS server from API server. |
+| **Security** | unauthorized trading. | Enforce JWT verification on all `/place_order` requests. |
+
+---
+
+## 7. Testing Strategy
+
+1.  **Unit Tests**:
+    -   Test [DatabaseHandler](file:///e:/market-project/database.py#12-577) methods (ensure maths is correct).
+    -   Test PnL calculation formulas.
+2.  **Integration Tests**:
+    -   [test_all.ps1](file:///e:/market-project/test_all.ps1) (PowerShell) acts as the integration suite. It simulates a full user flow: Register -> Login -> Place Order -> Check Portfolio.
+3.  **Edge Case Handling**:
+    -   **Insufficient Funds**: Verify order rejection.
+    -   **Race Conditions**: Rapid-fire buy orders shouldn't result in negative balance.
+
+---
+
+## 8. Deployment Plan
+
+-   **Docker**:
+    -   `app`: FastAPI Server.
+    -   `worker`: Streamer Process.
+    -   [db](file:///e:/market-project/server.py#49-70): PostgreSQL 15.
+    -   `redis`: Redis Alpine.
+-   **Environment Variables**:
+    -   Managed via [.env](file:///e:/market-project/.env) file (Database credentials, API Keys, Secret Tokens).
+-   **Logging**:
+    -   Stdout logging for Docker to capture (`docker logs`).

@@ -1,0 +1,162 @@
+# Technical Analysis Report: HedgeBot India
+
+## 1. Executive Summary
+
+**HedgeBot India** is a local-first paper trading application designed for the Indian stock market (NSE). It simulates a real-time trading environment using a microservices-lite architecture.
+
+The system consists of:
+1.  **FastAPI Backend**: Handles trade execution, portfolio management, and serves market data via WebSockets.
+2.  **React Frontend**: A single-page application (SPA) providing a real-time "Cockpit" view of the market and portfolio.
+3.  **Data Ingestion Service**: A standalone Python process ([stream_india.py](file:///e:/market-project/stream_india.py)) that fetches data (Mock or Angel One API) and pushes it to Redis.
+4.  **Redis**: Acts as a high-speed message broker for real-time market ticks.
+5.  **PostgreSQL**: Serves as the persistent store for users, orders, trades, and historical market data.
+
+**Key Findings:**
+-   **Architecture**: Well-separated concerns between data ingestion (Producer) and API serving (Consumer).
+-   **State**: The project is currently in a "Single User / Local Dev" state. Authentication logic exists in the database layer and testing scripts but is **bypassed** in the actual API server, which hardcodes a demo user.
+-   **Testing**: Completely manual. No unit tests exist, and the provided test script ([test_all.ps1](file:///e:/market-project/test_all.ps1)) targets endpoints that are not currently exposed by the server.
+-   **Performance**: Redis is correctly used to decouple high-frequency market data from the database.
+
+---
+
+## 2. Architecture Overview
+
+### High-Level Diagram
+```mermaid
+graph TD
+    User[User (Browser)] <-->|WebSocket (Realtime Data)| API[FastAPI Server]
+    User <-->|HTTP (Orders/Portfolio)| API
+    
+    subgraph Data Layer
+        API <-->|Read/Write| DB[(PostgreSQL)]
+        API <-->|Sub Ticks| Redis[(Redis Cache)]
+    end
+    
+    subgraph Background Services
+        Stream[stream_india.py] -->|Pub Ticks| Redis
+        Stream -->|Batch Insert| DB
+    end
+    
+    External[Angel One API / Mock] -->|Fetch Data| Stream
+```
+
+### Component Interaction
+1.  **Streamer**: Fetches data from External Source -> Pushes to Redis -> Inserts to DB.
+2.  **API Server**: Subscribes to Redis -> Broadcasts to Frontend via WebSocket.
+3.  **API Server**: Receives Orders -> Validates -> Writes to DB.
+
+---
+
+## 3. Module-Level Breakdown
+
+### 3.1 Backend API ([server.py](file:///e:/market-project/server.py))
+-   **Framework**: FastAPI.
+-   **Responsibility**:
+    -   Expose HTTP endpoints for Portfolio and Orders.
+    -   Expose WebSocket endpoint for real-time market data.
+    -   Manage database connections.
+-   **Key Logic**:
+    -   [startup_db_setup](file:///e:/market-project/server.py#49-70): Auto-creates a "Demo User" and "Portfolio" if missing.
+    -   [websocket_endpoint](file:///e:/market-project/server.py#124-161): Reads from Redis at 30fps and pushes to connected clients.
+-   **Observation**: Authentication is completely bypassed. It uses `DEMO_USER_ID = 1`.
+
+### 3.2 Data Ingestion ([stream_india.py](file:///e:/market-project/stream_india.py))
+-   **Responsibility**: Fetch market data and feed the system.
+-   **Modes**:
+    -   `MOCK`: Generates random walks for NIFTY.
+    -   `LIVE`: Connects to Angel One SmartAPI WebSocket.
+-   **Data Flow**:
+    -   **Hot Path**: Writes Price/Bid/Ask/Spread to Redis (for UI).
+    -   **Cold Path**: Writes Ticks to Postgres `market_ticks` table (for History).
+
+### 3.3 Database Layer ([database.py](file:///e:/market-project/database.py) & [db/schema.sql](file:///e:/market-project/db/schema.sql))
+-   **Technology**: PostgreSQL + `psycopg2` (Raw SQL).
+-   **Schema**:
+    -   `users`: ID, email, password_hash.
+    -   [portfolios](file:///e:/market-project/database.py#139-152): Cash balance, total capital.
+    -   [positions](file:///e:/market-project/server.py#92-97): Open holdings, avg price, unrealized PnL.
+    -   [orders](file:///e:/market-project/server.py#98-103): Limit/Market orders.
+    -   [trades](file:///e:/market-project/database.py#417-433): Executed trade history.
+    -   `market_ticks`: High-frequency time-series data.
+-   **Abstraction**: [DatabaseHandler](file:///e:/market-project/database.py#12-577) class encapsulating all SQL queries.
+
+### 3.4 Frontend (`frontend/`)
+-   **Stack**: React 19, Vite, TypeScript.
+-   **Dependencies**: `lightweight-charts` (TradingView), `react-use-websocket`.
+-   **Structure**: Simple SPA. Logic is concentrated in [App.tsx](file:///e:/market-project/frontend/src/App.tsx).
+-   **Features**:
+    -   Real-time Charting (Line Chart).
+    -   Live Price/Spread Cards.
+    -   Connection Status Indicator.
+
+---
+
+## 4. Application Flow Analysis
+
+### 4.1 Startup Flow
+1.  **Database**: Postgres container/service starts.
+2.  **Redis**: Redis service starts.
+3.  **API**: [server.py](file:///e:/market-project/server.py) starts -> Initializes DB Pool -> Checks Redis -> Ensures Demo User 1 exists.
+4.  **Streamer**: [stream_india.py](file:///e:/market-project/stream_india.py) starts -> Connects to Source -> Starts pushing to Redis/DB.
+5.  **Frontend**: User opens localhost -> App mounts -> Fetches `/history` -> Connects WebSocket.
+
+### 4.2 Application Logic (Request Lifecycle)
+-   **Market Data**:
+    -   `Streamer` -> `Redis` (Key: `price:NIFTY`) -> `API` (Loop) -> [WebSocket](file:///e:/market-project/frontend/src/App.tsx#63-97) -> `Frontend`.
+-   **Order Placement**:
+    -   `Frontend` (Future) -> `POST /place_order` -> `API` -> `Database.create_order()`.
+    -   *Note*: Order Matching engine is missing. Orders go to DB but stay [pending](file:///e:/market-project/database.py#321-337) unless logic is added to match them.
+
+---
+
+## 5. Data Layer Analysis
+
+-   **Database**: PostgreSQL.
+-   **ORM**: None. Direct SQL interpolation (safe parametrization used).
+-   **Migrations**: Manual [schema.sql](file:///e:/market-project/db/schema.sql) file. No migration tool (Alembic/Flyway) detected.
+-   **Entities**:
+    -   One-to-Many: `User` -> `Portfolios`.
+    -   One-to-Many: `User` -> `Orders`/`Positions`/`Trades`.
+
+---
+
+## 6. Integrations & Dependencies
+
+| Component | Dependency | Purpose | Status |
+| :--- | :--- | :--- | :--- |
+| **Backend** | `fastapi`, `uvicorn` | API Server | Active |
+| **Backend** | `psycopg2-binary` | DB Driver | Active |
+| **Backend** | `redis` | Cache/PubSub | Active |
+| **Backend** | `yfinance` | Historical Data | In [requirements.txt](file:///e:/market-project/requirements.txt) but unused in [server.py](file:///e:/market-project/server.py) |
+| **Backend** | `smartapi-python` | Angel One API | Used in [stream_india.py](file:///e:/market-project/stream_india.py) (Live Mode) |
+| **Frontend** | `lightweight-charts` | Charting Lib | Active |
+
+---
+
+## 7. DevOps & Testing
+
+-   **CI/CD**: None.
+-   **Docker**: No Dockerfile found in root.
+-   **Testing**:
+    -   [test_all.ps1](file:///e:/market-project/test_all.ps1): Automated PowerShell script.
+    -   **Issue**: The script tests `/register`, `/login`, `/me`, but [server.py](file:///e:/market-project/server.py) **does not implement these**. It implements `/account`, `/positions`, `/orders`. The test script is likely for a different version of the server or the server is missing the router mount.
+    -   **Unit Tests**: None. `pytest` is installed but no tests rely on it.
+
+---
+
+## 8. Risk & Improvement Analysis
+
+### 🔴 Critical Risks
+1.  **Missing Authentication**: The API is wide open. [server.py](file:///e:/market-project/server.py) hardcodes `DEMO_USER_ID = 1`. Any user hitting the API acts as the Admin/Demo user.
+2.  **Code/Test Mismatch**: [test_all.ps1](file:///e:/market-project/test_all.ps1) fails completely against the current codebase because the endpoints don't match.
+3.  **No Order Matching**: The system accepts orders but there is no "Execution Engine" to flip a [pending](file:///e:/market-project/database.py#321-337) order to `filled`. [stream_india.py](file:///e:/market-project/stream_india.py) only fetches data; it doesn't check limit orders.
+
+### 🟡 Improvements
+1.  **Implement Auth**: Restore the `/login` and `/register` endpoints and protect the API with the JWT logic found in [requirements.txt](file:///e:/market-project/requirements.txt).
+2.  **Add Matching Engine**: Create a service (or add to [stream_india.py](file:///e:/market-project/stream_india.py)) to check [pending](file:///e:/market-project/database.py#321-337) orders against current price and execute them.
+3.  **Dockerize**: Add `Dockerfile` and `docker-compose.yml` to spin up App + DB + Redis easily.
+4.  **Refactor Frontend**: Move API calls to a service layer and break [App.tsx](file:///e:/market-project/frontend/src/App.tsx) into components (`Chart.tsx`, `Dashboard.tsx`).
+
+### 🔍 Clarification Needed
+-   Is the [test_all.ps1](file:///e:/market-project/test_all.ps1) script from a previous iteration?
+-   Should the [server.py](file:///e:/market-project/server.py) support multi-user auth immediately, or is the "Demo User" mode intentional for this phase?

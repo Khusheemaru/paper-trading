@@ -1,0 +1,76 @@
+# Status Report: HedgeBot India
+
+**Date**: 2026-02-11
+**Project**: HedgeBot India Paper-Trading Platform
+
+---
+
+## 1. Project Summary
+
+**Current Objective**: Stabilize the MVP (Minimum Viable Product). The system currently has a working "Skeleton" (Market Data Stream -> Graph), but lacks the "Muscle" (Actual Auth & Order Execution).
+**Sprint Goals**:
+1.  Align [server.py](file:///e:/market-project/server.py) with the Testing Suite ([test_all.ps1](file:///e:/market-project/test_all.ps1)).
+2.  Implement missing Authentication endpoints.
+3.  Build the Order Execution Engine logic.
+
+**Overall Progress**: **65%**
+
+---
+
+## 2. Completed Tasks
+
+-   [x] **Database Schema**: Designed and implemented for Users, Portfolios, Orders, and Trades.
+-   [x] **Market Data Engine**: [stream_india.py](file:///e:/market-project/stream_india.py) successfully fetches data (Mock/Live) and pushes to Redis.
+-   [x] **Backend Skeleton**: FastAPI server running, DB connection pool established.
+-   [x] **Frontend Charting**: React app connects to WebSocket and renders real-time NIFTY graph.
+-   [x] **Redis Integration**: High-frequency data channel is operational.
+
+---
+
+## 3. In-Progress Tasks
+
+-   [ ] **Authentication Logic**: migrating logic from [test_all.ps1](file:///e:/market-project/test_all.ps1) expectations into actual [server.py](file:///e:/market-project/server.py) implementation.
+-   [ ] **Order Placement UI**: Connecting the Frontend "Buy" button to the Backend API.
+-   [ ] **Test Suite Repair**: Rewriting/Fixing tests to align with the current API structure.
+
+---
+
+## 4. Pending Tasks (Backlog)
+
+-   [ ] **Order Matching Service**: A background task or event loop to execute [pending](file:///e:/market-project/database.py#321-337) Limit orders when price is crossed.
+-   [ ] **Dockerization**: Creating `docker-compose.yml` for one-click startup.
+-   [ ] **Historical Data Backfill**: Filling the DB with more than just the last session's data.
+
+---
+
+## 5. Blockers / Risks
+
+-   **CRITICAL Mismatch**: The testing script [test_all.ps1](file:///e:/market-project/test_all.ps1) assumes a fully functional Auth system (Login/Register), but the current [server.py](file:///e:/market-project/server.py) bypasses this with a hardcoded `DEMO_USER`. This makes automated testing impossible right now.
+-   **Execution Logic**: Currently, orders are just "saved" to the DB. There is no code that actually deducts cash or adds shares upon order entry. This is a functional gap.
+
+---
+
+## 6. Metrics
+
+| Metric | Status | Notes |
+| :--- | :--- | :--- |
+| **Backend Completion** | 60% | Missing Auth, Order Execution Logic. |
+| **Frontend Completion** | 70% | Chart works, but Trading UI is missing. |
+| **API Coverage** | 40% | Only Read-Only endpoints (GET) are fully working. |
+| **Test Coverage** | 0% | Existing test script fails completely. |
+
+---
+
+## 7. Next Milestones
+
+-   **Sprint 1 (Immediate)**: Restore `/login` and `/register` endpoints. Make [test_all.ps1](file:///e:/market-project/test_all.ps1) pass.
+-   **Sprint 2**: Implement "Market Order" execution logic (Cash deduction + Position update) inside the `/place_order` endpoint.
+-   **Sprint 3**: Add "Trade Panel" to Frontend to allow user interaction.
+
+---
+
+## 8. Timeline Health
+
+**Status: ⚠️ At Risk**
+
+**Explanation**: The project infrastructure (DB/Redis) is healthy, but the *application logic* is behind. We are missing the core transactional logic (Buying/Selling). Without completing the Order Execution Engine, the platform is just a "Market Viewer," not a "Trading Platform."

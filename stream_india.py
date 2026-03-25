@@ -1,3 +1,17 @@
+"""
+stream_india.py — Multi-Asset Market Data Pipeline
+
+MOCK Mode: Generates correlated synthetic tick data for all 4 asset classes
+           simultaneously at 10 ticks/second. Prices follow real financial
+           correlations (equities are volatile, bonds are stable, gold
+           inversely correlates with equity drops).
+
+LIVE Mode:  Fetches real market data using yfinance every 2 seconds to avoid
+            rate limits. Provides 15-minute delayed prices for NSE/BSE assets.
+            Both modes push identical Redis key structures so the rest of the
+            application never needs to know which mode is active.
+"""
+
 import config
 import redis
 import time
@@ -6,138 +20,206 @@ import json
 import logging
 from database import DatabaseHandler
 
-# --- LOGGING SETUP ---
+# --- LOGGING ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logger = logging.getLogger("STREAMER")
 
-# 1. Initialize Database
-# The connection pool is initialized automatically in __init__
+# --- CONNECTIONS ---
 db = DatabaseHandler()
 
-# 2. Initialize Redis
 try:
-    r = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, decode_responses=True)
-    r.ping() 
-    logging.info(f"✅ [REDIS] Connected to {config.REDIS_HOST}:{config.REDIS_PORT}")
+    if config.REDIS_URL:
+        r = redis.from_url(config.REDIS_URL, decode_responses=True)
+    else:
+        r = redis.Redis(
+            host=config.REDIS_HOST,
+            port=config.REDIS_PORT,
+            db=config.REDIS_DB,
+            decode_responses=True,
+        )
+    r.ping()
+    logger.info(f"✅ [REDIS] Connected to {config.REDIS_HOST}:{config.REDIS_PORT}")
 except Exception as e:
-    logging.error(f"❌ [REDIS] Connection Failed: {e}")
+    logger.error(f"❌ [REDIS] Connection Failed: {e}")
     exit(1)
 
-# --- CONFIG MAPPING ---
-# Ensure we use the primary symbol from config
-CURRENT_SYMBOL = config.PRIMARY_SYMBOL 
 
-# MODE A: THE SIMULATOR (Mock Data)
+def push_to_redis(symbol: str, price: float, bid: float, ask: float, spread: float) -> None:
+    """Batch push all price keys for one symbol to Redis atomically."""
+    pipe = r.pipeline()
+    pipe.set(f"price:{symbol}", round(price, 2))
+    pipe.set(f"bid:{symbol}",   round(bid, 2))
+    pipe.set(f"ask:{symbol}",   round(ask, 2))
+    pipe.set(f"spread:{symbol}", round(spread, 2))
+    pipe.execute()
+
+
+def save_tick(symbol: str, price: float, bid: float, ask: float, volume: int) -> None:
+    """Persist a market tick to PostgreSQL for history queries."""
+    try:
+        db.insert_tick(symbol, price, bid, ask, volume)
+    except Exception as e:
+        logger.warning(f"[DB] Tick insert failed for {symbol}: {e}")
+
+
+# =============================================================================
+# MODE A — MOCK (Correlated Synthetic Simulator)
+# =============================================================================
+
 def run_mock_stream():
-    logging.info(f"[MODE: MOCK] Starting {CURRENT_SYMBOL} Simulator...")
-    
-    price = 24500.00  
-    
+    logger.info("🤖 [MODE: MOCK] Starting Multi-Asset Correlated Simulator...")
+
+    # Working price state for each asset — starts at configured base price
+    prices = {symbol: cfg["base_price"] for symbol, cfg in config.ASSET_CONFIG.items()}
+
+    tick_count = 0
+
     while True:
         try:
-            # 1. Simulate Price Movement
-            change = random.uniform(-10.0, 10.0) 
-            price += change
-            
-            # 2. Simulate Spread
-            spread = random.uniform(0.05, 1.50)
-            bid = price - (spread / 2)
-            ask = price + (spread / 2)
-            
-            # Simulate Volume (optional, but good for your new DB schema)
-            volume = random.randint(50, 500)
-            
-            # 3. Push to Redis
-            pipe = r.pipeline()
-            pipe.set(f"price:{CURRENT_SYMBOL}", round(price, 2))
-            pipe.set(f"bid:{CURRENT_SYMBOL}", round(bid, 2))
-            pipe.set(f"ask:{CURRENT_SYMBOL}", round(ask, 2))
-            pipe.set(f"spread:{CURRENT_SYMBOL}", round(spread, 2))
-            pipe.execute()
-            
-            # 4. Save to DB 
-            # Note: We do NOT pass timestamp anymore, database.py handles it.
-            # Signature: insert_tick(symbol, price, bid, ask, volume)
-            db.insert_tick(CURRENT_SYMBOL, price, bid, ask, volume)
-            
-            logging.info(f"[MOCK] {CURRENT_SYMBOL}: ₹{price:.2f} | Spread: ₹{spread:.2f}")
-            
-            time.sleep(0.1)
-            
+            tick_count += 1
+
+            # ---------------------------------------------------------------
+            # 1. Generate a "market shock" for equity direction this tick
+            #    This single random number drives correlation:
+            #      - Equities move WITH the market shock
+            #      - Gold moves AGAINST it (safe haven hedge)
+            #      - Bonds move very slightly and independently
+            # ---------------------------------------------------------------
+            equity_shock = random.gauss(0, 1)  # standard normal: mean 0, std 1
+
+            for symbol, cfg in config.ASSET_CONFIG.items():
+                vol = cfg["volatility"]
+                asset_class = cfg["asset_class"]
+
+                if asset_class == "Equity":
+                    # Equities strongly track the equity shock
+                    change = equity_shock * vol * random.uniform(0.8, 1.2)
+
+                elif asset_class == "Commodity":
+                    # Gold has an inverse correlation to equities (flight to safety)
+                    # When equity_shock < 0 (market drops), gold tends to rise
+                    gold_shock = -equity_shock * 0.6 + random.gauss(0, 0.4)
+                    change = gold_shock * vol
+
+                else:  # FixedIncome
+                    # Bonds are mostly independent and very low volatility
+                    change = random.gauss(0, vol)
+
+                # Apply the change, and prevent prices going below a floor
+                floor = cfg["base_price"] * 0.3
+                prices[symbol] = max(floor, prices[symbol] + change)
+
+                price = prices[symbol]
+
+                # Simulate a realistic bid/ask spread for this asset class
+                if asset_class == "Equity":
+                    spread = random.uniform(0.50, 2.50)
+                elif asset_class == "Commodity":
+                    spread = random.uniform(1.00, 4.00)
+                else:
+                    spread = random.uniform(0.10, 0.50)
+
+                bid = price - (spread / 2)
+                ask = price + (spread / 2)
+                volume = random.randint(50, 500)
+
+                # Push to Redis and persist to DB
+                push_to_redis(symbol, price, bid, ask, spread)
+
+                # Only write to DB every 10th tick to reduce disk I/O
+                if tick_count % 10 == 0:
+                    save_tick(symbol, price, bid, ask, volume)
+
+            # Log a summary row every 50 ticks (~5 seconds) to keep terminal clean
+            if tick_count % 50 == 0:
+                summary = " | ".join(
+                    f"{s}: ₹{prices[s]:,.2f}" for s in config.SYMBOLS
+                )
+                logger.info(f"[MOCK] {summary}")
+
+            time.sleep(config.TICK_INTERVAL)
+
         except KeyboardInterrupt:
-            logging.info("[STOP] Simulator stopped by user.")
+            logger.info("⛔ [STOP] Simulator stopped by user.")
             break
         except Exception as e:
-            logging.error(f"!! Error: {e}")
+            logger.error(f"[ERROR] {e}")
             time.sleep(1)
 
-# MODE B: REAL MARKET DATA (Angel One)
+
+# =============================================================================
+# MODE B — LIVE (Yahoo Finance / yfinance, 15-minute delayed)
+# =============================================================================
+
 def run_live_stream():
     try:
-        from smartapi import SmartConnect, SmartWebSocket
+        import yfinance as yf
+        import time as _time
     except ImportError:
-        logging.error("❌ Library 'smartapi-python' not found.")
+        logger.error("❌ 'yfinance' not installed. Run: venv\\Scripts\\pip install yfinance")
         return
 
-    logging.info(f"🚀 [MODE: LIVE] Connecting to Angel One...")
+    logger.info("🌐 [MODE: LIVE] Starting yfinance Multi-Asset Stream (fast_info mode)...")
 
-    try:
-        obj = SmartConnect(api_key=config.INDIAN_API_KEY)
-        data = obj.generateSession(config.INDIAN_CLIENT_CODE, config.INDIAN_PASSWORD, config.TOTP_SECRET)
-        feed_token = obj.getfeedToken()
-        logging.info("✅ [API] Session Generated & Token Received")
-    except Exception as e:
-        logging.error(f"❌ [API] Login Failed: {e}")
-        return
+    # Pre-build Ticker objects once — reusing them avoids repeated auth overhead
+    symbol_to_ticker = {
+        symbol: cfg["yf_ticker"]
+        for symbol, cfg in config.ASSET_CONFIG.items()
+    }
+    logger.info(f"   Polling: {', '.join(symbol_to_ticker.values())} every ~{config.LIVE_FETCH_INTERVAL:.0f}s")
 
-    def on_message(ws, message):
+    while True:
         try:
-            # Check if message contains LTP (Last Traded Price)
-            if "ltp" in message:
-                ltp = float(message.get('ltp'))
-                best_bid = float(message.get('bp', ltp)) 
-                best_ask = float(message.get('sp', ltp))
-                spread = best_ask - best_bid
-                
-                # Angel One often sends volume as 'v' or 'vol'
-                # We use 0 if not found to prevent errors
-                volume = int(message.get('v', 0)) 
+            for symbol, yf_ticker in symbol_to_ticker.items():
+                try:
+                    # MUST re-instantiate Ticker inside the loop to bypass yfinance's fast_info cache
+                    ticker_obj = yf.Ticker(yf_ticker)
+                    info = ticker_obj.fast_info
 
-                # Push to Redis
-                r.set(f"price:{CURRENT_SYMBOL}", ltp)
-                r.set(f"bid:{CURRENT_SYMBOL}", best_bid)
-                r.set(f"ask:{CURRENT_SYMBOL}", best_ask)
-                r.set(f"spread:{CURRENT_SYMBOL}", spread)
-                
-                # Insert into DB
-                # Note: We do NOT pass timestamp, database.py uses datetime.now()
-                db.insert_tick(CURRENT_SYMBOL, ltp, best_bid, best_ask, volume)
+                    price = float(info.last_price)
+                    if price is None or price <= 0:
+                        logger.warning(f"[LIVE] No valid price for {symbol} ({yf_ticker}).")
+                        continue
 
-                print(f"⚡ [LIVE] {CURRENT_SYMBOL}: ₹{ltp:.2f}")
-                
+                    # Use 52-week range to estimate a realistic spread for this asset
+                    try:
+                        fifty_two_week_range = float(info.fifty_two_week_high) - float(info.fifty_two_week_low)
+                        spread_estimate = max(0.01, fifty_two_week_range * 0.0005)
+                    except Exception:
+                        spread_estimate = price * 0.0002  # fallback: 0.02% of price
+
+                    bid = price - (spread_estimate / 2)
+                    ask = price + (spread_estimate / 2)
+                    volume = int(getattr(info, "three_month_average_volume", 0) or 0)
+
+                    push_to_redis(symbol, price, bid, ask, spread_estimate)
+                    save_tick(symbol, price, bid, ask, volume)
+
+                    logger.info(f"[LIVE] {symbol} ({yf_ticker}): {price:,.4f}")
+
+                except Exception as e:
+                    logger.warning(f"[LIVE] Error fetching {symbol}: {e}")
+
+                # Small delay between tickers to avoid rate-limiting
+                _time.sleep(0.5)
+
+            # Sleep between full cycles
+            _time.sleep(config.LIVE_FETCH_INTERVAL)
+
+        except KeyboardInterrupt:
+            logger.info("⛔ [STOP] Live stream stopped by user.")
+            break
         except Exception as e:
-            logging.error(f"Parse Error: {e}")
+            logger.error(f"[ERROR] {e}")
+            _time.sleep(10)
 
-    def on_open(ws):
-        logging.info("✅ [WS] WebSocket Connection Established")
-        subscribe_packet = {
-            "action": "subscribe", 
-            "mode": 2, 
-            "exchangeType": "nse_cm", 
-            "tokens": [config.SYMBOL_TOKEN] 
-        }
-        ws.send(json.dumps(subscribe_packet))
 
-    def on_error(ws, error):
-        logging.error(f"❌ [WS] Error: {error}")
-
-    sws = SmartWebSocket(feed_token, config.INDIAN_CLIENT_CODE)
-    sws._on_open = on_open
-    sws._on_message = on_message
-    sws._on_error = on_error
-    sws.connect()
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
 
 if __name__ == "__main__":
-    if config.USE_MOCK_DATA:
+    if config.is_mock_mode():
         run_mock_stream()
     else:
         run_live_stream()

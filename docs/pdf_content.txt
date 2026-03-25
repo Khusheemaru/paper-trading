@@ -1,0 +1,331 @@
+
+==================== e:\market-project\MidPresentation.pptx.pdf ====================
+
+--- Page 1 ---
+SARV AJANIK COLLEGE OF ENGINEERING AND TECHNOLOGY 
+COMPUTER ENGINEERING DEPARTMENT 
+B. Tech. IV , CO, SEM - VIII, DIV - I/II 
+(Term : EVEN - 2025 - 26) 
+Internship Presentation 
+on
+“AI-Driven System Engineering: Deployment, 
+Forecasting, and Document Intelligence” 
+Subject Name :  Internship (BTCO16804) 
+Prepared and Presented by 
+Kuldeep Kevat (Enrollment No. : ET22BTCO053) 
+Guided by  
+Prof. Vandana Joshi 
+Assistant Professor 
+
+--- Page 2 ---
+Details of Company/Industry 
+•Name : Responscity Systems (P.) Ltd. 
+•Address : Gujarat Hira Bourse, Surat 
+•Web-site : https://responscity.co.in/  
+•Industry mentor’s Details : 
+–Name : Amit Sharma 
+–Contact number : 84699 22775 
+–E-mail : hello@responscity.com 
+* 2 
+--- Page 3 ---
+Presentation Outline 
+•Face Recognition Optimization 
+•Water Level Forecasting Models 
+•OCR & RAG Research 
+•Complaint AI System Deployment 
+•Diamond Recommendation System 
+•Vector-less RAG for DRHP Summarization 
+•Technical Challenges & Learning 
+* 3 
+--- Page 4 ---
+Face Recognition System 
+Purpose: 
+•Automate visitor verification system. 
+•If visitor already registered → face scan → automatic entry. 
+•If first-time visitor → collect meeting details via UI. 
+•Reduce manual registration workload. 
+Existing System: 
+•UI and backend already developed. 
+•Face detection & classification implemented. 
+•Issue: Image retrieval and caching inefficiency. 
+* 4 
+--- Page 5 ---
+Face Recognition System 
+Cache Issues in Existing System 
+•Cache created on every 
+request/run. 
+•Cache supported only a single 
+folder. 
+•No automatic update when: 
+–Image added 
+–Image deleted 
+–Image modified 
+•Cache not synchronized with 
+database. 
+•Slow retrieval for large datasets. 
+5 Impact 
+•Response time in minutes. 
+•Unnecessary cache recreation. 
+•Incorrect recognition due to 
+outdated cache. 
+•Poor scalability. 
+--- Page 6 ---
+Face Recognition System 
+Improvements Implemented 
+•Designed hierarchical folder-level 
+cache system. 
+•Auto-detects nested folder 
+structure from database. 
+•Generates cache for all images 
+across multiple levels. 
+•Cache created: 
+–Once at application startup. 
+–Not on every request. 
+6 Smart Update Logic 
+•Auto-update cache on: 
+•Image addition 
+•Image update 
+•Image deletion 
+•No manual GET/PUT request 
+required. 
+•If full database changes → 
+rebuild cache only at startup. 
+Results 
+•Cache creation time reduced from minutes to few seconds. 
+•Retrieval became near real-time. 
+•Eliminated redundant cache creation. 
+•Ensured database-cache consistency. 
+•Improved system scalability and stability. 
+--- Page 7 ---
+Water Level Forecasting 
+Model(Phase 1) 
+System Modules: 
+Data Collection 
+Feature Selection (Discharge + Tidal Height) 
+LSTM Model Training 
+Evaluation 
+Forecast Output 
+Objective: 
+Predict next 6 hours water level 
+Model: 
+LSTM (Initial Phase) 
+Used discharge & tidal height 
+Performance: 
+92–93% R² Score 
+<15% MAE 
+5–6% percentage error 
+Forecast at 10-min intervals 
+* 7 
+--- Page 8 ---
+Water Level Forecasting 
+Model(Phase 2) 
+Objective :
+Predict second bridge water level using first bridge trends 
+Method :
+Used previous 6-hour trend 
+Engineered time-based features 
+Applied XGBoost Regression 
+Outcome :
+Captured upstream dependency 
+Accurate short-term prediction 
+Improved model stability 
+* 8 
+--- Page 9 ---
+OCR & RAG Research 
+OCR Research: 
+Studied document text extraction 
+Evaluated structured & unstructured document handling 
+RAG Study: 
+Embedding generation 
+Retrieval mechanisms 
+Hallucination reduction 
+Learning: 
+Context chunking strategies 
+Retrieval optimization 
+Context-window handling 
+* 9 
+--- Page 10 ---
+Diamond Recommendation System 
+Logic: 
+Fetch user preferences 
+Filter diamonds (cut, clarity, carat, price) 
+Ranking mechanism 
+Return top matches 
+Outcome: 
+Personalized recommendations 
+Optimized DB queries 
+* 10 
+--- Page 11 ---
+Vector-less RAG for DRHP 
+Summarization(Ongoing) 
+Objective: 
+Convert 400–500 page DRHP → 12–15 page structured summary 
+Pipeline: 
+File Upload 
+Company Info Extraction 
+Industry Classification 
+Financial Keyword Detection 
+Table & Metric Extraction 
+Section Segmentation 
+Relevant Filtering 
+LLM Summarization 
+PDF Generation 
+Focus: 
+More tables 
+Less descriptive text 
+Financial data prioritization 
+* 11 
+--- Page 12 ---
+Conclusion 
+Successfully deployed production AI system 
+Built multi-stage forecasting models 
+Researched advanced RAG architectures 
+Developed recommendation engine 
+Designing scalable financial document intelligence system 
+Internship contributed to: 
+Real-world AI system deployment 
+Research-oriented development 
+Practical ML model implementation 
+* 12 
+--- Page 13 ---
+References 
+•https://www.researchgate.net/publication/360620085_OPTICAL_CHARACTER_RECOGN
+ITION 
+•https://arxiv.org/abs/2312.10997 
+•https://xgboost.readthedocs.io/en/release_3.2.0/prediction.html 
+•http://www.gsdma.org/rainfalldata-2?Type=2 
+•https://pageindex.ai/blog/pageindex-intro 
+•https://www.geeksforgeeks.org/deep-learning/deep-learning-introduction-to-long-short-term-
+memory/ 
+* 13 
+==================== e:\market-project\midPresentation.pptx (1).pdf ====================
+
+--- Page 1 ---
+SARV AJANIK COLLEGE OF ENGINEERING AND TECHNOLOGY 
+COMPUTER ENGINEERING DEPARTMENT 
+B. Tech. IV , CO, SEM - VIII, DIV - I 
+(Term : EVEN - 2025 - 26) 
+Internship Presentation 
+on 
+“Startup Pulse: A Production-Ready Startup Directory” 
+Subject Name :  Internship (BTCO16804) 
+Prepared and Presented by 
+Shivam Mishra (Enrollment No. : ET22BTCO065) 
+Guided by  
+Prof. Urmi Desai 
+Assistant Professor 
+
+--- Page 2 ---
+Details of Company/Industry 
+•Name : Axy Inc. 
+•Address :914 Avadh kontina,Vip Road, Canal 
+Road Corner, near CB patel club, Surat, 
+Gujarat 395007 
+•Web-site :https://www.axy-app.com/ 
+•Industry mentor’s Details : 
+–Name : Aarsh Patel 
+–Contact number :9904900341 
+–E-mail :aarsh@axy-app.com 
+* 2 
+--- Page 3 ---
+Presentation Outline 
+•System Architecture: High-performance 
+rendering with Next.js 15 & React 19. 
+•Content Management System: Structured data 
+handling via Sanity.io & GROQ. 
+•Authentication Framework: Secure identity 
+management with Auth.js (GitHub OAuth). 
+•Optimization Strategies: Maximizing speed 
+using Partial Pre-rendering (PPR) & ISR. 
+•Technologies Learned: Key technical skills and 
+tools mastered during development 
+* 3 
+--- Page 4 ---
+System Architecture: Next.js 15 & 
+React 19 
+-Next.js 15 (App Router): Implemented a 
+server-first architecture to ensure fast initial page 
+loads and improved SEO. 
+-React 19 Hooks: Leveraged advanced hooks like 
+useActionState  for seamless form handling and 
+state management. 
+-Server Components: Designed the system to 
+render heavy logic on the server, significantly 
+reducing the JavaScript bundle size for the user. * 4 
+--- Page 5 ---
+Content Management System: 
+Sanity.io & GROQ 
+-Headless CMS Integration: Used Sanity.io as a 
+flexible backend to store startup pitches, author 
+profiles, and curated playlists. 
+-GROQ Queries: Implemented Graph-Relational 
+Object Query Language to fetch complex data 
+structures with high efficiency. 
+-Real-time Synchronization: Utilized Sanity’s Live 
+Content API to ensure the UI updates instantly when 
+new data is submitted. * 5 
+--- Page 6 ---
+Authentication Framework: Auth.js 
+(GitHub OAuth) 
+-Secure Social Login: Integrated GitHub OAuth to 
+provide a frictionless and secure registration 
+process for entrepreneurs. 
+-Session Management: Used Auth.js to manage user 
+sessions securely across the client and server. 
+-Author Identity Mapping: Automatically linked 
+GitHub profiles to Sanity author documents for 
+automated profile creation. 
+* 6 
+--- Page 7 ---
+Optimization Strategies: PPR & ISR 
+ -Partial Pre-rendering (PPR): Implemented a hybrid   
+rendering model where the static page shell loads 
+instantly, while dynamic parts (like view counts) are 
+streamed in. 
+  
+ -Incremental Static Regeneration (ISR): Configured 
+background revalidation (e.g., every 60 seconds) to keep 
+startup details fresh without slowing down the server. 
+ -Data-Cache Consistency: Optimized the retrieval process 
+to ensure that the user always sees the most recent 
+pitches. 
+* 7 
+--- Page 8 ---
+ Technologies Learned 
+-Web Frameworks: Mastery of Next.js 15 and React 19 for 
+building production-grade full-stack applications. 
+-Backend Development: Gained hands-on experience with 
+Fastify for building high-performance, low-overhead server 
+logic. 
+-Database & ORM: Developed expertise in PostgreSQL for 
+relational data storage and Prisma for type-safe database 
+access and migrations. 
+-Data Querying: Learn GROQ and Sanity.io for managing 
+structured content and complex data relationships. * 8 
+--- Page 9 ---
+9
+
+--- Page 10 ---
+10
+
+--- Page 11 ---
+Conclusion 
+The Startup pulse project successfully 
+demonstrates a modern, high-performance 
+approach to Full-Stack development. By utilizing 
+Next.js 15 and React 19, the system achieves 
+enterprise-grade speed and scalability while 
+maintaining a secure and interactive 
+environment for users. 
+11
+--- Page 12 ---
+References 
+●Next.js 15 Documentation: https://nextjs.org/docs  
+●React 19 (Official Blog):  https://react.dev/blog/2024/12/05/react-19  
+●Sanity.io (Headless CMS): https://www.sanity.io/docs  
+●Auth.js (NextAuth Documentation): https://authjs.dev/ 
+●Prisma ORM (Data Modeling): https://www.prisma.io/docs 
+●Fastify Framework (High-Performance Backend): 
+https://fastify.dev/docs/latest/ 
+●PostgreSQL Official Site:  https://www.postgresql.org/docs/ 
+* 12 

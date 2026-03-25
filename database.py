@@ -283,16 +283,16 @@ class DatabaseHandler:
 
     # ========== ORDER OPERATIONS ==========
     
-    def create_order(self, user_id: int, symbol: str, order_type: str, quantity: int, price: Optional[float] = None) -> int:
+    def create_order(self, user_id: int, symbol: str, order_type: str, quantity: int, price: Optional[float] = None, execution_mode: str = 'MARKET') -> int:
         """Create new order (MARKET or LIMIT)"""
         conn = self.get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO orders (user_id, symbol, order_type, quantity, price, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO orders (user_id, symbol, order_type, quantity, price, status, execution_mode, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                """, (user_id, symbol, order_type.upper(), quantity, price, 'pending', datetime.now()))
+                """, (user_id, symbol, order_type.lower(), quantity, price, 'pending', execution_mode.upper(), datetime.now()))
                 order_id = cur.fetchone()[0]
                 conn.commit()
                 logger.info(f"✓ Order created: {order_type} {quantity} {symbol} (ID: {order_id})")
@@ -464,6 +464,111 @@ class DatabaseHandler:
             raise
         finally:
             self.return_connection(conn)
+
+    def execute_market_order(self, user_id: int, symbol: str, side: str, quantity: int, price: float, is_limit_execution: bool = False, existing_order_id: Optional[int] = None) -> Dict:
+        """
+        Atomically execute a market order (or trigger a limit order):
+        1. Validate Funds/Holdings
+        2. Create Order (Executed) OR Update existing LIMIT order
+        3. Create Trade
+        4. Update Position
+        5. Update Portfolio Cash
+        """
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # 1. Fetch Portfolio
+                cur.execute("SELECT * FROM portfolios WHERE user_id = %s AND symbol = %s FOR UPDATE", (user_id, symbol))
+                portfolio = cur.fetchone()
+                if not portfolio:
+                     # Create if missing (rare case in this flow but safe)
+                    cur.execute("""
+                        INSERT INTO portfolios (user_id, symbol, total_capital, cash_available, created_at, updated_at)
+                        VALUES (%s, %s, 1000000.00, 1000000.00, NOW(), NOW())
+                        RETURNING *
+                    """, (user_id, symbol))
+                    portfolio = cur.fetchone()
+
+                total_cost = price * quantity
+                
+                if side.upper() == "BUY":
+                    if float(portfolio['cash_available']) < total_cost:
+                        raise ValueError(f"Insufficient funds. Required: {total_cost}, Available: {portfolio['cash_available']}")
+                    
+                    cash_change = -total_cost
+                    qty_change = quantity
+                    
+                elif side.upper() == "SELL":
+                    # Check Holdings
+                    cur.execute("SELECT quantity FROM positions WHERE user_id = %s AND symbol = %s", (user_id, symbol))
+                    pos = cur.fetchone()
+                    current_qty = pos['quantity'] if pos else 0
+                    
+                    if current_qty < quantity:
+                        raise ValueError(f"Insufficient holdings. Required: {quantity}, Owned: {current_qty}")
+                        
+                    cash_change = total_cost
+                    qty_change = -quantity
+                else:
+                    raise ValueError("Invalid side")
+
+                # 2. Handle Order Record
+                if is_limit_execution and existing_order_id:
+                    # Update the existing pending limit order
+                    cur.execute("""
+                        UPDATE orders 
+                        SET status = 'executed', executed_price = %s, executed_at = NOW()
+                        WHERE id = %s
+                        RETURNING id
+                    """, (price, existing_order_id))
+                    order_id = cur.fetchone()['id']
+                else:
+                    # Create a new market order
+                    cur.execute("""
+                        INSERT INTO orders (user_id, symbol, order_type, quantity, price, executed_price, status, execution_mode, created_at, executed_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'executed', 'MARKET', NOW(), NOW())
+                        RETURNING id
+                    """, (user_id, symbol, side.lower(), quantity, price, price))
+                    order_id = cur.fetchone()['id']
+
+                # 3. Create Trade
+                cur.execute("""
+                    INSERT INTO trades (user_id, order_id, symbol, quantity, entry_price, entry_time, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW(), 'open', NOW())
+                    RETURNING id
+                """, (user_id, order_id, symbol, quantity, price))
+                trade_id = cur.fetchone()['id']
+
+                # 4. Update Position (Upsert)
+                cur.execute("""
+                    INSERT INTO positions (user_id, symbol, quantity, entry_price, current_price, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, 'open', NOW(), NOW())
+                    ON CONFLICT (user_id, symbol) 
+                    DO UPDATE SET 
+                        quantity = positions.quantity + %s,
+                        current_price = %s,
+                        updated_at = NOW()
+                """, (user_id, symbol, quantity if side.upper() == "BUY" else 0, price, price, qty_change, price))
+
+                # 5. Update Portfolio Cash
+                cur.execute("""
+                    UPDATE portfolios 
+                    SET cash_available = cash_available + %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (cash_change, portfolio['id']))
+
+                conn.commit()
+                logger.info(f"✓ Executed {side} {quantity} {symbol} @ {price}")
+                
+                return {"status": "executed", "order_id": order_id, "trade_id": trade_id, "price": price}
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Market Execution Failed: {e}")
+            raise e
+        finally:
+            self.return_connection(conn)
+
 
     # ========== MARKET TICKS OPERATIONS ==========
     
