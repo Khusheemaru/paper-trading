@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import TradingChart from "./components/TradingChart";
 import Login from "./components/Login";
@@ -7,6 +7,8 @@ import TradePanel from "./components/TradePanel";
 import PositionsTable from "./components/PositionsTable";
 import PendingOrdersTable from "./components/PendingOrdersTable";
 import AnalyticsDashboard from "./pages/AnalyticsDashboard";
+import StrategyBuilder from "./pages/StrategyBuilder";
+import TradeJournal from "./pages/TradeJournal";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const API_BASE = "http://localhost:8000";
@@ -43,6 +45,9 @@ function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem("token"));
   const [cashAvailable, setCashAvailable] = useState(0);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Chart screenshot ref (set by TradingChart)
+  const chartScreenshotRef = useRef<(() => Promise<string | null>) | null>(null);
 
   // ── Asset selection ──────────────────────────────────────────────
   const [activeSymbol, setActiveSymbol] = useState<Symbol>("NIFTY");
@@ -133,7 +138,37 @@ function App() {
     localStorage.removeItem("userId");
   };
 
-  const handleTradeComplete = () => setRefreshTrigger((prev) => prev + 1);
+  const handleTradeComplete = async () => {
+    setRefreshTrigger((prev) => prev + 1);
+    // Auto-capture chart snapshot when a trade is placed (fire-and-forget)
+    if (chartScreenshotRef.current) {
+      try {
+        const dataUrl = await chartScreenshotRef.current();
+        if (dataUrl && token) {
+          // Convert dataURL to Blob and POST to /journal/snapshot/{trade_id}
+          // trade_id is unknown at this point — snapshot tagged to latest trade
+          const blob = await (await fetch(dataUrl)).blob();
+          const form = new FormData();
+          form.append("file", blob, "snapshot.png");
+          // Fetch the latest trade id from orders endpoint
+          const ordersRes = await fetch(`${API_BASE}/orders`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (ordersRes.ok) {
+            const orders = await ordersRes.json();
+            const latest = orders.find((o: any) => o.status === "executed");
+            if (latest?.id) {
+              await fetch(`${API_BASE}/journal/snapshot/${latest.id}`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+                body: form,
+              });
+            }
+          }
+        }
+      } catch (e) { console.warn("Snapshot capture failed:", e); }
+    }
+  };
 
   // ── Guard: show login ────────────────────────────────────────────
   if (!token) return <Login onLoginSuccess={handleLoginSuccess} />;
@@ -152,20 +187,27 @@ function App() {
           <span style={{ fontWeight: 700, fontSize: "18px", color: "#00e5ff" }}>HedgeBot</span>
           <span style={{ color: "#555", fontSize: "16px" }}>|</span>
           <div style={{ display: "flex", gap: "8px", marginLeft: "10px" }}>
-            <button
-               onClick={() => navigate('/')}
-               style={{ background: location.pathname === '/' ? '#rgba(0, 229, 255, 0.1)' : 'transparent',
-                        color: location.pathname === '/' ? '#00e5ff' : '#888',
-                        border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}>
-              Terminal
-            </button>
-            <button
-               onClick={() => navigate('/analytics')}
-               style={{ background: location.pathname === '/analytics' ? '#rgba(0, 229, 255, 0.1)' : 'transparent',
-                        color: location.pathname === '/analytics' ? '#00e5ff' : '#888',
-                        border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}>
-              Analytics
-            </button>
+            {[
+              { path: "/",          label: "Terminal"  },
+              { path: "/analytics", label: "Analytics" },
+              { path: "/strategies",label: "Strategies"},
+              { path: "/journal",   label: "Journal"   },
+            ].map(({ path, label }) => (
+              <button
+                key={path}
+                id={`nav-${label.toLowerCase()}`}
+                onClick={() => navigate(path)}
+                style={{
+                  background: location.pathname === path ? "rgba(0,229,255,0.1)" : "transparent",
+                  color: location.pathname === path ? "#00e5ff" : "#888",
+                  border: "none", padding: "6px 12px", borderRadius: "6px",
+                  cursor: "pointer", fontWeight: 600, fontSize: "14px",
+                  transition: "all 0.2s",
+                }}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -255,7 +297,7 @@ function App() {
               <AccountSummary token={token} />
             </div>
 
-            {/* ── MAIN CONTENT (2-COL GRID) ───────────────────────────── */}
+                      {/* ── MAIN CONTENT (2-COL GRID) ───────────────────────────── */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: "20px", padding: "0 24px 24px" }}>
 
               {/* LEFT COLUMN: metric cards + chart + positions */}
@@ -268,11 +310,12 @@ function App() {
                   <MetricCard label="Spread"     value={`${cur}${currentData.spread.toFixed(2)}`} color={currentData.spread < 2.0 ? "#00ff88" : "#ffa500"} />
                 </div>
 
-                {/* Live Candlestick Chart — TradingChart owns WS + history internally */}
+                {/* Live Candlestick Chart */}
                 <TradingChart
                   symbol={activeSymbol}
                   onTickReceived={handleTickReceived}
                   onStatusChange={handleStatusChange}
+                  onScreenshotReady={(fn) => { chartScreenshotRef.current = fn; }}
                 />
 
                 {/* Positions & Pending Orders Table */}
@@ -294,7 +337,9 @@ function App() {
           </>
         } />
         
-        <Route path="/analytics" element={<AnalyticsDashboard token={token} />} />
+        <Route path="/analytics"  element={<AnalyticsDashboard token={token} />} />
+        <Route path="/strategies" element={<StrategyBuilder    token={token} />} />
+        <Route path="/journal"    element={<TradeJournal       token={token} />} />
       </Routes>
     </div>
 

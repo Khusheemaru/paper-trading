@@ -35,8 +35,9 @@ interface MarketTick {
 
 interface TradingChartProps {
   symbol: string;
-  onTickReceived?: (tick: MarketTick) => void; // pass live tick up to App
+  onTickReceived?: (tick: MarketTick) => void;
   onStatusChange?: (status: string) => void;
+  onScreenshotReady?: (fn: () => Promise<string | null>) => void;
 }
 
 // Helper: round unix timestamp down to the nearest minute
@@ -46,6 +47,7 @@ export default function TradingChart({
   symbol,
   onTickReceived,
   onStatusChange,
+  onScreenshotReady,
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef     = useRef<IChartApi | null>(null);
@@ -98,6 +100,14 @@ export default function TradingChart({
 
     chartRef.current  = chart;
     seriesRef.current = candleSeries;
+
+    // Expose screenshot function to parent via callback
+    if (onScreenshotReady) {
+      onScreenshotReady(async () => {
+        if (!chartRef.current) return null;
+        return chartRef.current.takeScreenshot().toDataURL("image/png");
+      });
+    }
 
     // ── 2. Resize handler ────────────────────────────────────────────
     const onResize = () => {

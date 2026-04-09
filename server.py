@@ -1,6 +1,7 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import redis
 import json
@@ -11,12 +12,15 @@ import time
 import jwt
 import random
 import math
+import os
+import shutil
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from database import DatabaseHandler
 from market_data import get_candles
-from limit_order_engine import run_limit_order_engine_sync
+from order_engine import run_order_engine_sync
+from strategy_engine import run_strategy_engine_sync
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +36,11 @@ app = FastAPI(title="HedgeBot India API")
 
 # 1. DATABASE CONNECTION
 db = DatabaseHandler()
+
+# Static file directory for chart snapshots (S3-compatible path structure)
+SNAPSHOT_DIR = os.path.join(os.path.dirname(__file__), "static", "snapshots")
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # 2. CORS MIDDLEWARE
 app.add_middleware(
@@ -60,6 +69,13 @@ class OrderRequest(BaseModel):
     quantity: int
     price: float = 0.0 # 0 for Market Orders
     execution_mode: str = "MARKET"
+
+class StrategyCreate(BaseModel):
+    name: str
+    rules_json: dict  # Full DSL structure as defined in strategy_engine.py
+
+class StrategyStatusUpdate(BaseModel):
+    status: str  # "active" or "paused"
 
 class UserCreate(BaseModel):
     username: str
@@ -134,8 +150,11 @@ async def startup_db_setup():
     # Start the limit order engine in a dedicated background thread
     # This prevents its synchronous DB & Redis calls from blocking FastAPI's async event loop
     import threading
-    logger.info("⚙️ Starting Limit Order Engine (Background Thread)...")
-    threading.Thread(target=run_limit_order_engine_sync, daemon=True).start()
+    logger.info("⚙️ Starting Advanced Order Engine (Background Thread)...")
+    threading.Thread(target=run_order_engine_sync, daemon=True).start()
+
+    logger.info("⚙️ Starting Strategy Engine (Background Thread)...")
+    threading.Thread(target=run_strategy_engine_sync, daemon=True).start()
 
 # ==========================================
 #  AUTH ENDPOINTS
@@ -187,13 +206,11 @@ def read_users_me(current_user: dict = Depends(get_current_user)):
 
 @app.get("/account")
 def get_account_summary(current_user: dict = Depends(get_current_user)):
-    """Get aggregated Cash Balance and PnL across all asset portfolios."""
+    """Get aggregated Net Worth, Cash Balance, and PnL across all asset portfolios."""
     user_id = current_user['id']
 
     total_cash = 0.0
-    total_capital = 0.0
-
-    # Aggregate across all asset class portfolios
+    # Process all asset class portfolios to find current cash
     for symbol in config.SYMBOLS:
         portfolio = db.get_portfolio(user_id, symbol)
         if not portfolio:
@@ -201,23 +218,36 @@ def get_account_summary(current_user: dict = Depends(get_current_user)):
             db.create_portfolio(user_id, symbol, cap)
             portfolio = db.get_portfolio(user_id, symbol)
         total_cash += float(portfolio['cash_available'])
-        total_capital += float(portfolio['total_capital'])
 
+    # Get all open positions
     positions = db.get_all_positions(user_id)
 
-    # Calculate unrealized PnL dynamically via Redis
+    # Calculate actual Invested (at cost) and current Unrealized PnL
+    total_invested_at_cost = 0.0
+    total_current_market_value = 0.0
     total_pnl = 0.0
+
     for p in positions:
+        cost_basis = float(p['entry_price']) * int(p['quantity'])
+        total_invested_at_cost += cost_basis
+        
         r_price = r.get(f"price:{p['symbol']}")
         if r_price:
             current_price = float(r_price)
-            pnl = (current_price - float(p['entry_price'])) * int(p['quantity'])
-            total_pnl += pnl
+            market_value = current_price * int(p['quantity'])
+            total_current_market_value += market_value
+            total_pnl += (market_value - cost_basis)
+        else:
+            # Fallback to cost basis if price not in cache
+            total_current_market_value += cost_basis
+
+    # Current Net Worth = Cash + Current Market Value of all positions
+    current_net_worth = total_cash + total_current_market_value
 
     return {
         "cash": round(total_cash, 2),
-        "total_capital": round(total_capital, 2),
-        "invested": round(total_capital - total_cash, 2),
+        "total_capital": round(current_net_worth, 2),
+        "invested": round(total_invested_at_cost, 2),
         "current_pnl": round(total_pnl, 2),
     }
 
@@ -336,8 +366,133 @@ def place_order(order: OrderRequest, current_user: dict = Depends(get_current_us
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 # ==========================================
-#  MARKET DATA ENDPOINTS
+#  STRATEGY ENDPOINTS (PROTECTED)
 # ==========================================
+
+@app.post("/strategies", status_code=201)
+def create_strategy(payload: StrategyCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new algorithmic trading strategy."""
+    rules = payload.rules_json
+
+    # Validate required top-level fields
+    symbol = rules.get("symbol", "").upper()
+    action = rules.get("action", "").upper()
+    if symbol not in config.SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'. Must be one of {config.SYMBOLS}.")
+    if action not in ("BUY", "SELL"):
+        raise HTTPException(status_code=400, detail="'action' must be 'BUY' or 'SELL'.")
+    if "condition" not in rules:
+        raise HTTPException(status_code=400, detail="rules_json must contain a 'condition' key.")
+
+    # Normalise symbol in DSL
+    rules["symbol"] = symbol
+    rules["action"] = action
+
+    try:
+        strat_id = db.create_strategy(
+            user_id    = current_user["id"],
+            name       = payload.name.strip(),
+            rules_json = rules,
+        )
+        return {"status": "created", "strategy_id": strat_id}
+    except Exception as e:
+        logger.error(f"Strategy creation failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.get("/strategies")
+def get_strategies(current_user: dict = Depends(get_current_user)):
+    """Fetch all strategies belonging to the current user."""
+    return db.get_user_strategies(current_user["id"])
+
+
+@app.patch("/strategies/{strategy_id}/status")
+def update_strategy_status(
+    strategy_id: int,
+    payload: StrategyStatusUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Pause or reactivate a strategy (user-scoped)."""
+    if payload.status not in ("active", "paused"):
+        raise HTTPException(status_code=400, detail="status must be 'active' or 'paused'.")
+    try:
+        db.update_strategy_status(strategy_id, current_user["id"], payload.status)
+        return {"status": payload.status, "strategy_id": strategy_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Strategy status update failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.delete("/strategies/{strategy_id}", status_code=200)
+def delete_strategy(
+    strategy_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Permanently delete a strategy (user-scoped)."""
+    try:
+        db.delete_strategy(strategy_id, current_user["id"])
+        return {"status": "deleted", "strategy_id": strategy_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Strategy deletion failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+# ==========================================
+#  TRADE JOURNAL ENDPOINTS (PROTECTED)
+# ==========================================
+
+@app.post("/journal/snapshot/{trade_id}")
+async def upload_snapshot(
+    trade_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Receives a chart screenshot (PNG/WEBP) from the frontend.
+    Saves it under /static/snapshots/{user_id}/{trade_id}.webp
+    and records the path in the trade_journals table.
+    """
+    user_id = current_user["id"]
+
+    # User-scoped folder (S3-compatible path structure for future migration)
+    user_dir = os.path.join(SNAPSHOT_DIR, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    # Accept only image types
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are accepted.")
+
+    ext       = file.filename.split(".")[-1] if "." in file.filename else "png"
+    filename  = f"{trade_id}.{ext}"
+    file_path = os.path.join(user_dir, filename)
+
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Relative URL path (served via /static/)
+    relative_url = f"/static/snapshots/{user_id}/{filename}"
+
+    # Upsert into trade_journals
+    try:
+        db.create_trade_journal(trade_id=trade_id, entry_snapshot_path=relative_url)
+    except Exception as e:
+        logger.error(f"Journal snapshot DB write failed: {e}")
+        # Don't fail the upload if DB write fails — file is already saved
+
+    return {"status": "saved", "url": f"http://localhost:8000{relative_url}"}
+
+
+@app.get("/journal")
+def get_trade_journal(current_user: dict = Depends(get_current_user)):
+    """Returns all trade journal entries for the current user."""
+    return db.get_trade_journal(current_user["id"])
+
+
+
 
 @app.websocket("/ws/market_data")
 async def websocket_endpoint(websocket: WebSocket, symbol: str = "NIFTY"):

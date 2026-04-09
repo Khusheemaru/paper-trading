@@ -1,5 +1,6 @@
 import psycopg2
-from psycopg2.pool import SimpleConnectionPool
+import json
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
@@ -15,8 +16,8 @@ class DatabaseHandler:
     def __init__(self):
         """Initialize connection pool"""
         try:
-            self.pool = SimpleConnectionPool(
-                1, 5,  # minconn=1, maxconn=5
+            self.pool = ThreadedConnectionPool(
+                1, 20,  # minconn=1, maxconn=20 (Increased for background threads)
                 host=DB_HOST,
                 database=DB_NAME,
                 user=DB_USER,
@@ -283,19 +284,40 @@ class DatabaseHandler:
 
     # ========== ORDER OPERATIONS ==========
     
-    def create_order(self, user_id: int, symbol: str, order_type: str, quantity: int, price: Optional[float] = None, execution_mode: str = 'MARKET') -> int:
-        """Create new order (MARKET or LIMIT)"""
+    def create_order(
+        self,
+        user_id: int,
+        symbol: str,
+        order_type: str,
+        quantity: int,
+        price: Optional[float] = None,
+        execution_mode: str = 'MARKET',
+        parent_order_id: Optional[int] = None,
+        trailing_offset: Optional[float] = None,
+        watermark_price: Optional[float] = None,
+        strategy_id: Optional[int] = None,
+        entry_reason: Optional[str] = None,
+    ) -> int:
+        """Create new order (MARKET, LIMIT, OCO, TRAILING, BRACKET)"""
         conn = self.get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO orders (user_id, symbol, order_type, quantity, price, status, execution_mode, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO orders (
+                        user_id, symbol, order_type, quantity, price, status,
+                        execution_mode, parent_order_id, trailing_offset,
+                        watermark_price, strategy_id, entry_reason, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                """, (user_id, symbol, order_type.lower(), quantity, price, 'pending', execution_mode.upper(), datetime.now()))
+                """, (
+                    user_id, symbol, order_type.lower(), quantity, price, 'pending',
+                    execution_mode.upper(), parent_order_id, trailing_offset,
+                    watermark_price, strategy_id, entry_reason, datetime.now()
+                ))
                 order_id = cur.fetchone()[0]
                 conn.commit()
-                logger.info(f"✓ Order created: {order_type} {quantity} {symbol} (ID: {order_id})")
+                logger.info(f"✓ Order created: {execution_mode} {order_type} {quantity} {symbol} (ID: {order_id})")
                 return order_id
         except Exception as e:
             conn.rollback()
@@ -514,18 +536,57 @@ class DatabaseHandler:
 
                 # 2. Handle Order Record
                 if is_limit_execution and existing_order_id:
-                    # Update the existing pending limit order
+                    # Lock the row to prevent race condition (two threads seeing same pending order)
+                    cur.execute(
+                        "SELECT id, status, parent_order_id FROM orders WHERE id = %s FOR UPDATE",
+                        (existing_order_id,)
+                    )
+                    locked_order = cur.fetchone()
+                    if not locked_order or locked_order['status'] != 'pending':
+                        raise ValueError(f"Order {existing_order_id} is no longer pending — skipping execution.")
+
                     cur.execute("""
-                        UPDATE orders 
+                        UPDATE orders
                         SET status = 'executed', executed_price = %s, executed_at = NOW()
                         WHERE id = %s
                         RETURNING id
                     """, (price, existing_order_id))
                     order_id = cur.fetchone()['id']
+
+                    # OCO / BRACKET: atomically cancel all sibling orders linked to the same parent
+                    parent_id = locked_order['parent_order_id']
+                    if parent_id is not None:
+                        cur.execute("""
+                            UPDATE orders
+                            SET status = 'cancelled'
+                            WHERE parent_order_id = %s
+                              AND id != %s
+                              AND status = 'pending'
+                        """, (parent_id, existing_order_id))
+                        cancelled = cur.rowcount
+                        if cancelled:
+                            logger.info(f"✓ OCO/Bracket: cancelled {cancelled} sibling order(s) for parent {parent_id}")
+
+                    # Standalone OCO: cancel the other leg sharing the same oco_group_id
+                    oco_group_id = locked_order.get('oco_group_id')
+                    if oco_group_id is not None:
+                        cur.execute("""
+                            UPDATE orders
+                            SET status = 'cancelled'
+                            WHERE oco_group_id = %s
+                              AND id != %s
+                              AND status = 'pending'
+                        """, (oco_group_id, existing_order_id))
+                        cancelled_oco = cur.rowcount
+                        if cancelled_oco:
+                            logger.info(f"✓ OCO: cancelled {cancelled_oco} paired leg(s) for group {oco_group_id}")
                 else:
                     # Create a new market order
                     cur.execute("""
-                        INSERT INTO orders (user_id, symbol, order_type, quantity, price, executed_price, status, execution_mode, created_at, executed_at)
+                        INSERT INTO orders (
+                            user_id, symbol, order_type, quantity, price, executed_price,
+                            status, execution_mode, created_at, executed_at
+                        )
                         VALUES (%s, %s, %s, %s, %s, %s, 'executed', 'MARKET', NOW(), NOW())
                         RETURNING id
                     """, (user_id, symbol, side.lower(), quantity, price, price))
@@ -676,6 +737,197 @@ class DatabaseHandler:
                 return [dict(c) for c in reversed(candles)]
         except Exception as e:
             logger.error(f"✗ Get candles failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    # ========== STRATEGY OPERATIONS ==========
+
+    def create_strategy(self, user_id: int, name: str, rules_json: dict) -> int:
+        """Persist a new algorithmic strategy DSL for a user"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO strategies (user_id, name, rules_json, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'active', NOW(), NOW())
+                    RETURNING id
+                """, (user_id, name, json.dumps(rules_json)))
+                strat_id = cur.fetchone()[0]
+                conn.commit()
+                logger.info(f"✓ Strategy created: '{name}' for user {user_id} (ID: {strat_id})")
+                return strat_id
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Strategy creation failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def get_user_strategies(self, user_id: int) -> List[Dict]:
+        """Fetch all strategies for a user, ordered newest first"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM strategies WHERE user_id = %s ORDER BY created_at DESC",
+                    (user_id,)
+                )
+                return [dict(s) for s in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"✗ Get user strategies failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def get_active_strategies(self) -> List[Dict]:
+        """Fetch ALL active strategies across all users (used by the strategy engine worker)"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM strategies WHERE status = 'active'")
+                return [dict(s) for s in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"✗ Get active strategies failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def update_strategy_status(self, strategy_id: int, user_id: int, status: str) -> None:
+        """Pause or re-activate a strategy (user-scoped for isolation)"""
+        if status not in ('active', 'paused'):
+            raise ValueError("Strategy status must be 'active' or 'paused'")
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE strategies
+                    SET status = %s, updated_at = NOW()
+                    WHERE id = %s AND user_id = %s
+                """, (status, strategy_id, user_id))
+                if cur.rowcount == 0:
+                    raise ValueError(f"Strategy {strategy_id} not found or not owned by user {user_id}")
+                conn.commit()
+                logger.info(f"✓ Strategy {strategy_id} status → {status}")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Strategy update failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def delete_strategy(self, strategy_id: int, user_id: int) -> None:
+        """Permanently delete a strategy, enforcing user ownership."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM strategies WHERE id = %s AND user_id = %s",
+                    (strategy_id, user_id)
+                )
+                if cur.rowcount == 0:
+                    raise ValueError(f"Strategy {strategy_id} not found or not owned by user {user_id}")
+                conn.commit()
+                logger.info(f"✓ Strategy {strategy_id} deleted by user {user_id}")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Strategy deletion failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    # ========== TRADE JOURNAL OPERATIONS ==========
+
+    def create_trade_journal(self, trade_id: int, entry_reason: str = None, entry_snapshot_path: str = None) -> int:
+        """Create a journal entry attached to a trade at entry time"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO trade_journals (trade_id, entry_reason, entry_snapshot_path, created_at)
+                    VALUES (%s, %s, %s, NOW())
+                    RETURNING id
+                """, (trade_id, entry_reason, entry_snapshot_path))
+                journal_id = cur.fetchone()[0]
+                conn.commit()
+                logger.info(f"✓ Trade journal created for trade {trade_id} (ID: {journal_id})")
+                return journal_id
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Trade journal creation failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def update_trade_journal_exit(
+        self, trade_id: int, exit_reason: str = None, exit_snapshot_path: str = None
+    ) -> None:
+        """Attach exit metadata to an existing journal entry"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE trade_journals
+                    SET exit_reason          = COALESCE(%s, exit_reason),
+                        exit_snapshot_path   = COALESCE(%s, exit_snapshot_path)
+                    WHERE trade_id = %s
+                """, (exit_reason, exit_snapshot_path, trade_id))
+                conn.commit()
+                logger.info(f"✓ Trade journal exit updated for trade {trade_id}")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"✗ Trade journal exit update failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def get_trade_journal(self, user_id: int) -> List[Dict]:
+        """Fetch all journal entries for a user, enriched with trade metadata (newest first)."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        tj.id,
+                        tj.trade_id,
+                        tj.entry_reason,
+                        tj.exit_reason,
+                        tj.entry_snapshot_path,
+                        tj.exit_snapshot_path,
+                        tj.created_at,
+                        t.symbol,
+                        t.order_type     AS side,
+                        t.quantity,
+                        t.price          AS execution_price,
+                        t.pnl
+                    FROM trade_journals tj
+                    JOIN trades t ON t.id = tj.trade_id
+                    WHERE t.user_id = %s
+                    ORDER BY tj.created_at DESC
+                """, (user_id,))
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"✗ Get trade journal failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
+    def get_trade_journal_by_id(self, trade_id: int, user_id: int) -> Optional[Dict]:
+        """Fetch the journal for a specific trade, enforcing user ownership."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT tj.*
+                    FROM trade_journals tj
+                    JOIN trades t ON t.id = tj.trade_id
+                    WHERE tj.trade_id = %s AND t.user_id = %s
+                """, (trade_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"✗ Get trade journal by id failed: {e}")
             raise
         finally:
             self.return_connection(conn)
