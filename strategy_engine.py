@@ -192,18 +192,15 @@ def _evaluate_leaf(rule: dict, prices: List[float], current_price: float) -> boo
     return _apply_operator(lhs, op, rhs)
 
 
-def _evaluate_condition(condition: dict, prices: List[float], current_price: float) -> bool:
-    """
-    Recursive evaluator for the full condition tree.
+def _evaluate_condition(condition: dict, prices: List[float], current_price: float, depth: int = 0) -> bool:
+    """Recursively evaluates the JSON condition tree against market data."""
+    if depth > 10:
+        raise ValueError("Strategy DSL condition tree too deep (max 10 levels)")
 
-    Dispatches AND / OR logical groups recursively, leaf nodes to _evaluate_leaf.
-    Short-circuits: AND stops on first False, OR stops on first True.
-    """
     if "AND" in condition:
-        return all(_evaluate_condition(c, prices, current_price) for c in condition["AND"])
-
+        return all(_evaluate_condition(c, prices, current_price, depth + 1) for c in condition["AND"])
     if "OR" in condition:
-        return any(_evaluate_condition(c, prices, current_price) for c in condition["OR"])
+        return any(_evaluate_condition(c, prices, current_price, depth + 1) for c in condition["OR"])
 
     return _evaluate_leaf(condition, prices, current_price)
 

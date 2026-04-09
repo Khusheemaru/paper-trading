@@ -2,7 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import redis
 import json
 import asyncio
@@ -66,8 +66,8 @@ except Exception as e:
 class OrderRequest(BaseModel):
     symbol: str
     side: str  # "BUY" or "SELL"
-    quantity: int
-    price: float = 0.0 # 0 for Market Orders
+    quantity: int = Field(gt=0, description="Quantity must be strictly positive")
+    price: float = Field(default=0.0, ge=0)
     execution_mode: str = "MARKET"
 
 class StrategyCreate(BaseModel):
@@ -458,15 +458,23 @@ async def upload_snapshot(
     """
     user_id = current_user["id"]
 
-    # User-scoped folder (S3-compatible path structure for future migration)
+    # 1. Authorize - Verify this user owns this trade history
+    trade = db.get_trade(trade_id, user_id)
+    if not trade:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this trade journal.")
+
+    # 2. Structure storage folder
     user_dir = os.path.join(SNAPSHOT_DIR, str(user_id))
     os.makedirs(user_dir, exist_ok=True)
 
-    # Accept only image types
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are accepted.")
+    # 3. Sanitize Extension - Ignore arbitrary client extensions
+    if file.content_type == "image/webp":
+        ext = "webp"
+    elif file.content_type in ["image/png", "application/octet-stream"]:
+        ext = "png"
+    else:
+        raise HTTPException(status_code=400, detail="Only PNG and WEBP images are accepted.")
 
-    ext       = file.filename.split(".")[-1] if "." in file.filename else "png"
     filename  = f"{trade_id}.{ext}"
     file_path = os.path.join(user_dir, filename)
 
@@ -481,7 +489,6 @@ async def upload_snapshot(
         db.create_trade_journal(trade_id=trade_id, entry_snapshot_path=relative_url)
     except Exception as e:
         logger.error(f"Journal snapshot DB write failed: {e}")
-        # Don't fail the upload if DB write fails — file is already saved
 
     return {"status": "saved", "url": f"http://localhost:8000{relative_url}"}
 

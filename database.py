@@ -838,6 +838,20 @@ class DatabaseHandler:
 
     # ========== TRADE JOURNAL OPERATIONS ==========
 
+    def get_trade(self, trade_id: int, user_id: int) -> Optional[Dict]:
+        """Fetch a specific trade enforcing user ownership."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM trades WHERE id = %s AND user_id = %s", (trade_id, user_id))
+                trade = cur.fetchone()
+                return dict(trade) if trade else None
+        except Exception as e:
+            logger.error(f"✗ Get trade failed: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
+
     def create_trade_journal(self, trade_id: int, entry_reason: str = None, entry_snapshot_path: str = None) -> int:
         """Create a journal entry attached to a trade at entry time"""
         conn = self.get_connection()
