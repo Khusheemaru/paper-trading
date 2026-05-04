@@ -74,6 +74,9 @@ class StrategyCreate(BaseModel):
     name: str
     rules_json: dict  # Full DSL structure as defined in strategy_engine.py
 
+class SymbolRequest(BaseModel):
+    symbol: str
+
 class StrategyStatusUpdate(BaseModel):
     status: str  # "active" or "paused"
 
@@ -490,7 +493,8 @@ async def upload_snapshot(
     except Exception as e:
         logger.error(f"Journal snapshot DB write failed: {e}")
 
-    return {"status": "saved", "url": f"http://localhost:8000{relative_url}"}
+    base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    return {"status": "saved", "url": f"{base_url}{relative_url}"}
 
 
 @app.get("/journal")
@@ -500,6 +504,51 @@ def get_trade_journal(current_user: dict = Depends(get_current_user)):
 
 
 
+
+# ==========================================
+#  MARKET DATA ENDPOINTS
+# ==========================================
+
+@app.get("/market/symbols")
+def get_market_symbols():
+    """Returns the static symbols + globally added dynamic symbols."""
+    dynamic = r.smembers("APP:DYNAMIC_TICKERS")
+    base = list(config.SYMBOLS)
+    # Return deduplicated, sorted
+    all_symbols = sorted(list(set(base + list(dynamic))))
+    return {"symbols": all_symbols}
+
+@app.post("/market/symbols")
+def add_market_symbol(req: SymbolRequest, current_user: dict = Depends(get_current_user)):
+    """Validates and adds a new NSE ticker to the global streaming pool."""
+    sym = req.symbol.strip().upper()
+    if not sym:
+        raise HTTPException(status_code=400, detail="Symbol cannot be empty.")
+        
+    base_sym = sym.replace(".NS", "")
+    yf_sym = f"{base_sym}.NS"
+
+    # 1. Check if already heavily tracked
+    if base_sym in config.SYMBOLS or r.sismember("APP:DYNAMIC_TICKERS", base_sym):
+        raise HTTPException(status_code=409, detail=f"Symbol {base_sym} is already being streamed.")
+
+    # 2. Validate via yfinance
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(yf_sym)
+        # Using fast_info or history to confidently verify it exists on Yahoo
+        info = ticker.fast_info
+        if not info.last_price or info.last_price <= 0:
+            raise ValueError("No valid price")
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid NSE symbol or failed to fetch data for {yf_sym}.")
+
+    # 3. Add to Redis
+    try:
+        r.sadd("APP:DYNAMIC_TICKERS", base_sym)
+        return {"status": "ok", "symbol": base_sym, "message": f"{base_sym} successfully added to data pipeline"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal Redis error.")
 
 @app.websocket("/ws/market_data")
 async def websocket_endpoint(websocket: WebSocket, symbol: str = "NIFTY"):
@@ -548,19 +597,23 @@ def get_all_prices():
     Returns the latest live price for every supported asset.
     Used by the frontend to populate the asset selector cards.
     """
+    # Merge static + dynamic symbols
+    dynamic = r.smembers("APP:DYNAMIC_TICKERS")
+    all_symbols = list(set(list(config.SYMBOLS) + list(dynamic)))
+
     result = {}
-    for symbol in config.SYMBOLS:
+    for symbol in all_symbols:
         price  = r.get(f"price:{symbol}")
         bid    = r.get(f"bid:{symbol}")
         ask    = r.get(f"ask:{symbol}")
         spread = r.get(f"spread:{symbol}")
-        cfg    = config.ASSET_CONFIG[symbol]
+        cfg    = config.ASSET_CONFIG.get(symbol, {"asset_class": "Equity"})
         result[symbol] = {
             "price":       float(price)  if price  else None,
             "bid":         float(bid)    if bid    else None,
             "ask":         float(ask)    if ask    else None,
             "spread":      float(spread) if spread else None,
-            "asset_class": cfg["asset_class"],
+            "asset_class": cfg.get("asset_class", "Equity"),
         }
     return result
 
@@ -568,7 +621,9 @@ def get_all_prices():
 @app.get("/history")
 def get_history(symbol: str = "NIFTY"):
     """Returns recent tick data for charting. Defaults to NIFTY."""
-    if symbol not in config.SYMBOLS:
+    dynamic = r.smembers("APP:DYNAMIC_TICKERS")
+    all_symbols = list(set(list(config.SYMBOLS) + list(dynamic)))
+    if symbol not in all_symbols:
         symbol = config.PRIMARY_SYMBOL
     raw_data = db.get_recent_ticks(symbol, limit=500)
     formatted_data = []
@@ -584,13 +639,16 @@ def get_history(symbol: str = "NIFTY"):
 @app.get("/symbols")
 def get_symbols():
     """Returns the list of all tradable symbols and their metadata."""
-    return {
-        symbol: {
+    dynamic = r.smembers("APP:DYNAMIC_TICKERS")
+    all_symbols = list(set(list(config.SYMBOLS) + list(dynamic)))
+    res = {}
+    for symbol in all_symbols:
+        cfg = config.ASSET_CONFIG.get(symbol, {"asset_class": "Equity", "base_price": 1000.0})
+        res[symbol] = {
             "asset_class": cfg["asset_class"],
             "base_price":  cfg["base_price"],
         }
-        for symbol, cfg in config.ASSET_CONFIG.items()
-    }
+    return res
 
 
 @app.get("/market/history/{symbol}")
@@ -602,7 +660,9 @@ def get_market_history(symbol: str, days: int = 5):
     MOCK mode: aggregates stored ticks into 1-minute candles.
     LIVE mode: fetches real historical data from yfinance.
     """
-    if symbol not in config.SYMBOLS:
+    dynamic = r.smembers("APP:DYNAMIC_TICKERS")
+    all_symbols = list(set(list(config.SYMBOLS) + list(dynamic)))
+    if symbol not in all_symbols:
         raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
     candles = get_candles(symbol, days=days)
     return candles
@@ -678,6 +738,13 @@ def set_data_mode(req: ModeRequest, current_user: dict = Depends(get_current_use
     r.set("APP_MODE:USE_MOCK", use_mock)
     logger.info(f"[MODE CHANGE] Data source switched to: {req.mode.upper()} by user {current_user['id']}")
     return {"status": "ok", "mode": req.mode}
+
+@app.get("/admin/mode")
+def get_data_mode():
+    """Returns the current market data mode."""
+    use_mock = r.get("APP_MODE:USE_MOCK")
+    mode = "live" if use_mock == "false" else "mock"
+    return {"mode": mode}
 
 @app.get("/portfolio/analytics")
 def get_portfolio_analytics(current_user: dict = Depends(get_current_user)):

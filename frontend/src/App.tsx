@@ -11,18 +11,22 @@ import StrategyBuilder from "./pages/StrategyBuilder";
 import TradeJournal from "./pages/TradeJournal";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
-const API_BASE = "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
 // All symbols supported by the backend (matches config.py ASSET_CONFIG keys)
-const SYMBOLS = ["NIFTY", "RELIANCE", "GOLD", "BONDS"] as const;
-type Symbol = typeof SYMBOLS[number];
+const INITIAL_SYMBOLS = ["NIFTY", "RELIANCE", "GOLD", "BONDS"];
+type Symbol = string;
 
-const SYMBOL_META: Record<Symbol, { label: string; currency: string }> = {
+const SYMBOL_META: Record<string, { label: string; currency: string }> = {
   NIFTY:    { label: "NIFTY 50",    currency: "₹" },
   RELIANCE: { label: "Reliance",    currency: "₹" },
   GOLD:     { label: "Gold (MCX)",  currency: "₹" },
   BONDS:    { label: "Bonds (10Y)", currency: "₹" },
 };
+
+function getSymbolMeta(sym: string) {
+  return SYMBOL_META[sym] || { label: sym, currency: "₹" };
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 interface MarketData {
@@ -64,6 +68,46 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState("Initializing...");
   const [dataMode, setDataMode] = useState<"live" | "mock">("mock");
   const [modeDialogMsg, setModeDialogMsg] = useState<string | null>(null);
+
+  // Dynamic Tickers
+  const [availableSymbols, setAvailableSymbols] = useState<Symbol[]>(INITIAL_SYMBOLS);
+  const [newSymbolInput, setNewSymbolInput] = useState("");
+  const [isAddingSymbol, setIsAddingSymbol] = useState(false);
+
+  // Fetch dynamic symbols
+  const fetchSymbols = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/market/symbols`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.symbols) setAvailableSymbols(data.symbols);
+      }
+    } catch (e) { console.error("Failed to fetch dynamic symbols", e); }
+  }, []);
+
+  const handleAddSymbol = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSymbolInput.trim()) return;
+    setIsAddingSymbol(true);
+    try {
+      const res = await fetch(`${API_BASE}/market/symbols`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: newSymbolInput.trim() })
+      });
+      if (res.ok) {
+        setNewSymbolInput("");
+        await fetchSymbols();
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (e) {
+      alert("Network error trying to add symbol.");
+    } finally {
+      setIsAddingSymbol(false);
+    }
+  };
 
   const handleModeToggle = async () => {
     const targetMode = dataMode === "mock" ? "live" : "mock";
@@ -110,6 +154,24 @@ function App() {
     const interval = setInterval(fetchAccount, 5000);
     return () => clearInterval(interval);
   }, [token, refreshTrigger]);
+
+  // ── Fetch current data mode on mount ─────────────────────────────
+  useEffect(() => {
+    if (!token) return;
+    const fetchMode = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/admin/mode`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setDataMode(data.mode);
+        }
+      } catch (err) { console.error("Mode fetch failed:", err); }
+    };
+    fetchMode();
+    fetchSymbols(); // Fetch the dynamic list on mount
+  }, [token, fetchSymbols]);
 
   // ── Poll all asset prices every 2 s for the asset header bar ────
   useEffect(() => {
@@ -173,7 +235,7 @@ function App() {
   // ── Guard: show login ────────────────────────────────────────────
   if (!token) return <Login onLoginSuccess={handleLoginSuccess} />;
 
-  const meta = SYMBOL_META[activeSymbol];
+  const meta = getSymbolMeta(activeSymbol);
   const cur  = meta.currency;
 
   return (
@@ -212,8 +274,8 @@ function App() {
         </div>
 
         {/* Asset Selector */}
-        <div style={{ display: "flex", gap: "8px" }}>
-          {SYMBOLS.map((sym) => (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          {availableSymbols.map((sym) => (
             <button
               key={sym}
               id={`asset-btn-${sym}`}
@@ -228,9 +290,22 @@ function App() {
               }}
               disabled={location.pathname === '/analytics'}
             >
-              {SYMBOL_META[sym].label}
+              {getSymbolMeta(sym).label}
             </button>
           ))}
+          <form onSubmit={handleAddSymbol} style={{ display: "flex", gap: "4px" }}>
+            <input 
+              type="text" 
+              placeholder="+ NSE SYMBOL" 
+              value={newSymbolInput}
+              onChange={(e) => setNewSymbolInput(e.target.value.toUpperCase())}
+              style={{ padding: "4px 8px", background: "#1a1a2e", color: "#e0e0e0", border: "1px solid #333", borderRadius: "4px", width: "90px", fontSize: "11px" }}
+              disabled={isAddingSymbol}
+            />
+            <button type="submit" disabled={isAddingSymbol || !newSymbolInput} style={{ background: "#4caf50", color: "#fff", border: "none", borderRadius: "4px", padding: "0 8px", cursor: "pointer", fontSize: "11px" }}>
+              {isAddingSymbol ? "..." : "ADD"}
+            </button>
+          </form>
         </div>
 
         <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
@@ -272,18 +347,18 @@ function App() {
         <Route path="/" element={
           <>
             {/* ── ALL-ASSETS PRICE BAR ────────────────────────────────── */}
-            <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1e1e2e", backgroundColor: "#0d0d18" }}>
-              {SYMBOLS.map((sym) => {
+            <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1e1e2e", backgroundColor: "#0d0d18", overflowX: "auto" }}>
+              {availableSymbols.map((sym) => {
                 const p = allPrices[sym];
                 return (
                   <div key={sym}
                     onClick={() => setActiveSymbol(sym)}
-                    style={{ flex: 1, padding: "10px 20px", cursor: "pointer",
+                    style={{ minWidth: "120px", flex: 1, padding: "10px 20px", cursor: "pointer",
                              borderRight: "1px solid #1e1e2e",
                              borderBottom: activeSymbol === sym ? "2px solid #00e5ff" : "2px solid transparent",
                              transition: "border-color 0.2s" }}
                   >
-                    <div style={{ fontSize: "11px", color: "#666", marginBottom: "2px" }}>{SYMBOL_META[sym].label}</div>
+                    <div style={{ fontSize: "11px", color: "#666", marginBottom: "2px" }}>{getSymbolMeta(sym).label}</div>
                     <div style={{ fontSize: "16px", fontWeight: 700, color: activeSymbol === sym ? "#00e5ff" : "#ccc" }}>
                       {p?.price != null ? `₹${p.price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}
                     </div>

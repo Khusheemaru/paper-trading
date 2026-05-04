@@ -62,6 +62,14 @@ def save_tick(symbol: str, price: float, bid: float, ask: float, volume: int) ->
         logger.warning(f"[DB] Tick insert failed for {symbol}: {e}")
 
 
+def get_target_mode() -> str:
+    """Reads the current mode toggle from Redis. Defaults to config if not set."""
+    val = r.get("APP_MODE:USE_MOCK")
+    if val is None:
+        return "mock" if config.is_mock_mode() else "live"
+    return "mock" if val == "true" else "live"
+
+
 # =============================================================================
 # MODE A — MOCK (Correlated Synthetic Simulator)
 # =============================================================================
@@ -75,8 +83,22 @@ def run_mock_stream():
     tick_count = 0
 
     while True:
+        if get_target_mode() == "live":
+            logger.info("🤖 [MODE: MOCK] Mode switch detected. Shutting down Mock Stream...")
+            break
+            
         try:
             tick_count += 1
+            
+            # Fetch dynamic tickers from Redis
+            dynamic_symbols = r.smembers("APP:DYNAMIC_TICKERS") or set()
+            for ds in dynamic_symbols:
+                if ds not in prices:
+                    prices[ds] = 1000.0  # Safe default mock start
+
+            # Combine static config and dynamic symbols for uniform looping
+            # (If a dynamic symbol lacks config, mock handles it gracefully)
+            all_symbols = list(config.SYMBOLS) + list(dynamic_symbols)
 
             # ---------------------------------------------------------------
             # 1. Generate a "market shock" for equity direction this tick
@@ -87,7 +109,8 @@ def run_mock_stream():
             # ---------------------------------------------------------------
             equity_shock = random.gauss(0, 1)  # standard normal: mean 0, std 1
 
-            for symbol, cfg in config.ASSET_CONFIG.items():
+            for symbol in all_symbols:
+                cfg = config.ASSET_CONFIG.get(symbol, {"volatility": 15.0, "asset_class": "Equity", "base_price": 1000.0})
                 vol = cfg["volatility"]
                 asset_class = cfg["asset_class"]
 
@@ -133,9 +156,9 @@ def run_mock_stream():
             # Log a summary row every 50 ticks (~5 seconds) to keep terminal clean
             if tick_count % 50 == 0:
                 summary = " | ".join(
-                    f"{s}: ₹{prices[s]:,.2f}" for s in config.SYMBOLS
+                    f"{s}: ₹{prices[s]:,.2f}" for s in all_symbols[:6] # Display up to 6
                 )
-                logger.info(f"[MOCK] {summary}")
+                logger.info(f"[MOCK] {summary}{'...' if len(all_symbols) > 6 else ''}")
 
             time.sleep(config.TICK_INTERVAL)
 
@@ -161,15 +184,25 @@ def run_live_stream():
 
     logger.info("🌐 [MODE: LIVE] Starting yfinance Multi-Asset Stream (fast_info mode)...")
 
-    # Pre-build Ticker objects once — reusing them avoids repeated auth overhead
-    symbol_to_ticker = {
+    # Pre-build Ticker base once
+    base_symbol_to_ticker = {
         symbol: cfg["yf_ticker"]
         for symbol, cfg in config.ASSET_CONFIG.items()
     }
-    logger.info(f"   Polling: {', '.join(symbol_to_ticker.values())} every ~{config.LIVE_FETCH_INTERVAL:.0f}s")
+    logger.info(f"   Base Polling: {', '.join(base_symbol_to_ticker.values())} every ~{config.LIVE_FETCH_INTERVAL:.0f}s")
 
     while True:
+        if get_target_mode() == "mock":
+            logger.info("🌐 [MODE: LIVE] Mode switch detected. Shutting down Live Stream...")
+            break
+            
         try:
+            # 1. Rebuild dict with dynamic components dynamically inserted
+            dynamic_symbols = r.smembers("APP:DYNAMIC_TICKERS") or set()
+            symbol_to_ticker = dict(base_symbol_to_ticker)
+            for ds in dynamic_symbols:
+                symbol_to_ticker[ds] = f"{ds}.NS"
+                
             for symbol, yf_ticker in symbol_to_ticker.items():
                 try:
                     # MUST re-instantiate Ticker inside the loop to bypass yfinance's fast_info cache
@@ -219,7 +252,16 @@ def run_live_stream():
 # =============================================================================
 
 if __name__ == "__main__":
-    if config.is_mock_mode():
-        run_mock_stream()
-    else:
-        run_live_stream()
+    logger.info("🚀 Market Data Streamer process started.")
+    try:
+        while True:
+            mode = get_target_mode()
+            if mode == "mock":
+                run_mock_stream()
+            else:
+                run_live_stream()
+            
+            # Small delay between switches to avoid spinning if errors occur early
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("🛑 Overall streamer process terminated by user.")

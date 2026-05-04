@@ -14,12 +14,14 @@ interface PendingOrdersTableProps {
   refresh: number; // Trigger refresh when this changes
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
 export default function PendingOrdersTable({ token, refresh }: PendingOrdersTableProps) {
   const [orders, setOrders] = useState<Order[]>([]);
 
   const fetchOrders = async () => {
     try {
-      const response = await fetch("http://localhost:8000/orders", {
+      const response = await fetch(`${API_BASE}/orders`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {
@@ -35,7 +37,7 @@ export default function PendingOrdersTable({ token, refresh }: PendingOrdersTabl
 
   const handleCancel = async (orderId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/orders/${orderId}/cancel`, {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/cancel`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });

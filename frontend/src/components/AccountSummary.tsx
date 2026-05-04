@@ -11,12 +11,14 @@ interface AccountSummaryProps {
   token: string;
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
 export default function AccountSummary({ token }: AccountSummaryProps) {
   const [account, setAccount] = useState<AccountData | null>(null);
 
   const fetchAccount = async () => {
     try {
-      const response = await fetch("http://localhost:8000/account", {
+      const response = await fetch(`${API_BASE}/account`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {

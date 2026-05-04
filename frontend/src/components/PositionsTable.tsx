@@ -13,12 +13,14 @@ interface PositionsTableProps {
   refresh: number; // Trigger refresh when this changes
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
 export default function PositionsTable({ token, refresh }: PositionsTableProps) {
   const [positions, setPositions] = useState<Position[]>([]);
 
   const fetchPositions = async () => {
     try {
-      const response = await fetch("http://localhost:8000/positions", {
+      const response = await fetch(`${API_BASE}/positions`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {

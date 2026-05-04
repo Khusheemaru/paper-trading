@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import RiskMetrics from "../components/RiskMetrics";
 import PnLAreaChart from "../components/PnLAreaChart";
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
 interface AnalyticsProps {
   token: string | null;
 }
@@ -20,7 +22,7 @@ const AnalyticsDashboard: React.FC<AnalyticsProps> = ({ token }) => {
     
     const fetchAnalytics = async () => {
       try {
-        const res = await fetch("http://localhost:8000/portfolio/analytics", {
+        const res = await fetch(`${API_BASE}/portfolio/analytics`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -45,7 +47,7 @@ const AnalyticsDashboard: React.FC<AnalyticsProps> = ({ token }) => {
     if (!token) return;
     setIsOptimizing(true);
     try {
-      const res = await fetch("http://localhost:8000/portfolio/optimize", {
+      const res = await fetch(`${API_BASE}/portfolio/optimize`, {
         method: "POST",
         headers: { 
           "Authorization": `Bearer ${token}`,
@@ -140,7 +142,7 @@ const AnalyticsDashboard: React.FC<AnalyticsProps> = ({ token }) => {
               setTimeout(() => {
                 if (!token) return;
                 setIsOptimizing(true);
-                fetch("http://localhost:8000/portfolio/optimize", {
+                fetch(`${API_BASE}/portfolio/optimize`, {
                   method: "POST",
                   headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
                   body: JSON.stringify({ weights: optimal })

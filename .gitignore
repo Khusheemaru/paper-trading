@@ -82,3 +82,6 @@ dump.rdb
 # ==========================
 .DS_Store
 Thumbs.db
+
+# Documentation
+docs/
