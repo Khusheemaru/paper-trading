@@ -21,6 +21,7 @@ from database import DatabaseHandler
 from market_data import get_candles
 from order_engine import run_order_engine_sync
 from strategy_engine import run_strategy_engine_sync
+from stream_india import start_streamer
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO)
@@ -158,6 +159,9 @@ async def startup_db_setup():
 
     logger.info("⚙️ Starting Strategy Engine (Background Thread)...")
     threading.Thread(target=run_strategy_engine_sync, daemon=True).start()
+
+    logger.info("⚙️ Starting Market Data Streamer (Background Thread)...")
+    threading.Thread(target=start_streamer, daemon=True).start()
 
 # ==========================================
 #  AUTH ENDPOINTS

@@ -251,7 +251,8 @@ def run_live_stream():
 # ENTRY POINT
 # =============================================================================
 
-if __name__ == "__main__":
+def start_streamer():
+    """Main entry point to start the streamer loop. Can be called in a background thread."""
     logger.info("🚀 Market Data Streamer process started.")
     try:
         while True:
@@ -263,5 +264,8 @@ if __name__ == "__main__":
             
             # Small delay between switches to avoid spinning if errors occur early
             time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("🛑 Overall streamer process terminated by user.")
+    except Exception as e:
+        logger.error(f"🛑 Streamer encountered a fatal error: {e}")
+
+if __name__ == "__main__":
+    start_streamer()
