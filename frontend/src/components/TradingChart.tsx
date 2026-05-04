@@ -173,8 +173,6 @@ export default function TradingChart({
       .then((candles: CandlestickData<Time>[]) => {
         if (!isMounted.current || !seriesRef.current) return;
 
-        let lastTs = 0;
-
         if (candles.length > 0) {
           // De-duplicate and sort by time
           const seen = new Set<number>();
